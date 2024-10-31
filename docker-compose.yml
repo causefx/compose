@@ -1,0 +1,22 @@
+version: ${COMPOSE_VERSION}
+name: {{SERVICE}}
+services:
+    app:
+        container_name: {{SERVICE}}
+        hostname: {{SERVICE}}
+        image: {{IMAGE}}
+        restart: unless-stopped
+        ports:
+            - ${CHANGE_ME_PORT_80}:80
+        volumes:
+            - ${APPS}/{{SERVICE}}:/{{CHANGE-ME}}
+            - ${TIME}
+        environment:
+            - PUID=${PUID}
+            - PGID=${PGID}
+            - TZ=${TZ}
+        logging:
+            driver: json-file
+            options:
+                max-file: ${DOCKERLOGGING_MAXFILE}
+                max-size: ${DOCKERLOGGING_MAXSIZE}
