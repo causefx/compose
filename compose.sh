@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.0.1
-### ChangeNotes: Add note about being up-to-date on version check
+VERSION=v1.1.0
+### ChangeNotes: Added new list visual, run version check on start of script - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -188,6 +188,16 @@ CheckAction() {
 }
 
 CheckVersion() {
+    ### Check if LATEST_RELEASE is empty and skip if so
+    if [[ -z "$LATEST_RELEASE" ]]; then
+        return
+    fi
+    
+    ### Bypass if all
+    if [[ "$folder" == "all" ]] ; then
+        return
+    fi
+    
     ### Version check & initiate self update
     if [[ "$VERSION" != "$LATEST_RELEASE" ]] ; then
         printf "New version available! %b%s%b ⇒ %b%s%b \n Change Notes: %s \n" "$c_yellow" "$VERSION" "$c_reset" "$c_green" "$LATEST_RELEASE" "$c_reset" "$LATEST_CHANGES"
@@ -195,8 +205,6 @@ CheckVersion() {
             read -r -p "Would you like to update? y/[n]: " SelfUpdate
             [[ "$SelfUpdate" =~ [yY] ]] && Update
         fi
-    else
-        echo "You are up-to-date"
     fi
 }
 
@@ -233,6 +241,7 @@ Update() {
 }
 
 List() {
+    printf "%15s    %s     %s\n" "Service" "Status" "  Container";
     for dir in $APPS/*/; do
         path=$(basename $dir)
         status=$(ReturnStatus $path)
@@ -240,10 +249,12 @@ List() {
             status="No container"
         fi
         if [ -f "$dir/$COMPOSE_FILE" ]; then
-            echo -e $path ['\033[32menabled\033[0m'] - [$status]
+            #echo -e $path ['\033[32menabled\033[0m'] - [$status]
+            printf "%15s    %b%s%b     %s\n" $path "$c_green" "Enabled " "$c_reset" $status;
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
-            echo -e $path ['\033[31mdisabled\033[0m'] - [$status]
+            #echo -e $path ['\033[31mdisabled\033[0m'] - [$status]
+            printf "%15s    %b%s%b     %s\n" $path "$c_red" "Disabled" "$c_reset" $status;
         fi
     done
 }
@@ -415,6 +426,7 @@ CheckEnv;
 CheckEnvVariables;
 LowerCaseArguments;
 CheckDockerCompose;
+CheckVersion;
 CheckAction;
 
 exit 0
