@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.1.0
-### ChangeNotes: Added new list visual, run version check on start of script - See README.md for past changes.
+VERSION=v1.1.1
+### ChangeNotes: Fixed listing of running containers - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -92,7 +92,7 @@ CheckDockerCompose() {
 
 CheckStatus() {
     CheckFolderSupplied $1
-    status=$($DockerBin ls -a --filter name=$1 --format=table | grep -Eo '(running|paused|stopped|exited)')
+    status=$($DockerBin ls -a --filter name=$1 --format=table | grep -Eos '(running|paused|stopped|exited)')
      if [ -n "$status" ]; then
         return 0
     else
@@ -102,11 +102,12 @@ CheckStatus() {
 
 ReturnStatus() {
     CheckFolderSupplied $1
-    status=$($DockerBin ls -a --filter name=$1 --format=table | grep -Eo '(running|paused|stopped|exited)')
-     if [ -n "$status" ]; then
+    status=$($DockerBin ls -a --filter name="$1" --format=table | grep -Eo '(exited\([0-9]+\)|running\([0-9]+\)|paused\([0-9]+\)|stopped\([0-9]+\))' | paste -sd ', ' -)
+
+    if [ -n "$status" ]; then
         echo $status
     else
-        echo "N/A"
+        echo " - "
     fi
 }
 
@@ -192,7 +193,7 @@ CheckVersion() {
     if [[ -z "$LATEST_RELEASE" ]]; then
         return
     fi
-    
+
     ### Bypass if all
     if [[ "$folder" == "all" ]] ; then
         return
