@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.0.0
-### ChangeNotes: First release
+VERSION=v1.0.1
+### ChangeNotes: Add note about being up-to-date on version check
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -190,11 +190,13 @@ CheckAction() {
 CheckVersion() {
     ### Version check & initiate self update
     if [[ "$VERSION" != "$LATEST_RELEASE" ]] ; then
-    printf "New version available! %b%s%b ⇒ %b%s%b \n Change Notes: %s \n" "$c_yellow" "$VERSION" "$c_reset" "$c_green" "$LATEST_RELEASE" "$c_reset" "$LATEST_CHANGES"
-    if [[ -z "$AutoUp" ]] ; then
-        read -r -p "Would you like to update? y/[n]: " SelfUpdate
-        [[ "$SelfUpdate" =~ [yY] ]] && Update
-    fi
+        printf "New version available! %b%s%b ⇒ %b%s%b \n Change Notes: %s \n" "$c_yellow" "$VERSION" "$c_reset" "$c_green" "$LATEST_RELEASE" "$c_reset" "$LATEST_CHANGES"
+        if [[ -z "$AutoUp" ]] ; then
+            read -r -p "Would you like to update? y/[n]: " SelfUpdate
+            [[ "$SelfUpdate" =~ [yY] ]] && Update
+        fi
+    else
+        echo "You are up-to-date"
     fi
 }
 
