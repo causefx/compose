@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.1.1
-### ChangeNotes: Fixed listing of running containers - See README.md for past changes.
+VERSION=v1.2.0
+### ChangeNotes: Better CLI responses - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -130,11 +130,11 @@ CheckFolderSuppliedNoExit() {
 CheckAction() {
     case $action in
         up)
-            echo "Starting services..."
+            printf "%s\n" "--- Starting services ---"
             SimpleAction "up -d" "$folder"
             ;;
         down)
-            echo "Stopping services..."
+            printf "%s\n" "--- Stopping services ---"
             SimpleAction "down" $folder
             ;;
         start)
@@ -144,15 +144,15 @@ CheckAction() {
             Stop $folder
             ;;
         restart)
-            echo "Restarting services..."
+            printf "%s\n" "--- Restarting services ---"
             SimpleAction "restart" $folder
             ;;
         pause)
-            echo "Pausing services..."
+            printf "%s\n" "--- Pausing services ---"
             SimpleAction "pause" $folder
             ;;
         unpause)
-            echo "Unpausing services..."
+            printf "%s\n" "--- Unpausing services ---"
             SimpleAction "unpause" $folder
             ;;
         enable)
@@ -167,7 +167,7 @@ CheckAction() {
             List
             ;;
         create)
-            echo "Creating service..."
+            printf "%s\n" "--- Creating service ---"
             Create $folder
             ;;
         remove)
@@ -242,7 +242,7 @@ Update() {
 }
 
 List() {
-    printf "%15s    %s     %s\n" "Service" "Status" "  Container";
+    printf "%15s    %s     %s\n" "Service" "Status" "  Container(s)";
     for dir in $APPS/*/; do
         path=$(basename $dir)
         status=$(ReturnStatus $path)
@@ -335,9 +335,8 @@ BulkAction() {
         fi
         exit
     else
-        echo "$APPS/$2/$COMPOSE_FILE"
         if [ -f "$APPS/$2/$COMPOSE_FILE" ]; then
-            echo "doing it for $2"
+            printf "%s\n" "--- Performing actions for $2 ---"
             $DockerBin --file $APPS/$2/$COMPOSE_FILE --env-file $envFile $1
         fi
     fi
