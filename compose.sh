@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.2.0
-### ChangeNotes: Better CLI responses - See README.md for past changes.
+VERSION=v1.2.1
+### ChangeNotes: Added gitignore file - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
