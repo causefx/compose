@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.2.1
-### ChangeNotes: Added gitignore file - See README.md for past changes.
+VERSION=v1.3.0
+### ChangeNotes: Better help menu, Ports action - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -30,6 +30,25 @@ Help() {
   echo "-a         Action to perform."
   echo "-f | -s    Folder/Service name."
   echo "-e         (Optional) ENV full file path. | Default: $SCRIPT_WORKING_DIR/.env"
+  printf "%s\n" "--- Available Actions ---"
+  printf "%s %15s\n" "Action" "     Description";
+  printf "%s %15s\n" "Help" "       This help menu";
+  printf "%s %15s\n" "Up" "         Create and start containers";
+  printf "%s %15s\n" "Down" "       Stop and remove containers, networks";
+  printf "%s %15s\n" "Start" "      Start service(s)";
+  printf "%s %15s\n" "Stop" "       Stop service(s)";
+  printf "%s %15s\n" "Restart" "    Restart service container(s)";
+  printf "%s %15s\n" "Pause" "      Pause service(s)";
+  printf "%s %15s\n" "Unpause" "    Unpause service(s)";
+  printf "%s %15s\n" "Enable" "     Enable service(s)";
+  printf "%s %15s\n" "Disable" "    Disable service(s)";
+  printf "%s %15s\n" "List" "       List service(s)";
+  printf "%s %15s\n" "Create" "     Create service";
+  printf "%s %15s\n" "Remove" "     Remove service";
+  printf "%s %15s\n" "Version" "    Display version";
+  printf "%s %15s\n" "Update" "     Update script";
+  printf "%s %15s\n" "Ports" "      Show ports from ENV file";
+
 }
 
 while getopts "ha:f:s:e:" options; do
@@ -174,7 +193,16 @@ CheckAction() {
             Remove $folder
             ;;
         version)
-            CheckVersion
+            printf "%s\n" "--- Version ${VERSION} ---"
+            ;;
+        update)
+            CheckVersion "silent"
+            ;;
+        ports)
+            CheckPorts
+            ;;
+        help)
+            Help
             ;;
         *)
             echo "Invalid option. Please use up, down, restart, list, create, enable or disable."
@@ -189,6 +217,8 @@ CheckAction() {
 }
 
 CheckVersion() {
+    local silent="$1"  # Accept an optional parameter
+
     ### Check if LATEST_RELEASE is empty and skip if so
     if [[ -z "$LATEST_RELEASE" ]]; then
         return
@@ -206,6 +236,9 @@ CheckVersion() {
             read -r -p "Would you like to update? y/[n]: " SelfUpdate
             [[ "$SelfUpdate" =~ [yY] ]] && Update
         fi
+    elif [[ "$silent" ]]; then
+        # Print "Already up-to-date" message only if `silent` is set
+        printf "%s\n" "--- Already up-to-date ---"
     fi
 }
 
@@ -420,6 +453,31 @@ Create() {
     
     exit
 }
+
+CheckPorts() {
+    printf "%15s    %s\n" "Service" "Port(s)";
+    declare -A ports  # Associative array to store service names and their ports
+
+    while IFS='=' read -r key value; do
+        # Check if the line contains `_PORT_` and is not a comment
+        if [[ $key == *_PORT_* && ! $key =~ ^# ]]; then
+            # Extract the part before `_PORT_` and capitalize it
+            name="${key%%_PORT_*}"
+            # Append the port if the service name already exists, otherwise create new entry
+            if [[ -n "${ports[$name]}" ]]; then
+                ports[$name]+=" | $value"
+            else
+                ports[$name]="$value"
+            fi
+        fi
+    done < "$envFile"
+
+    # Output the services and their ports
+    for name in "${!ports[@]}"; do
+        printf "%15s    %s\n" "${name^^}:" "${ports[$name]}"
+    done
+}
+
 
 # Do the Things
 CheckEnv;
