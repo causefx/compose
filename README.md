@@ -3,6 +3,7 @@ Personal docker compose management
 
 ## Changes
 
+### 1.3.0 Better help menu, Ports action
 ### 1.2.1 Added gitignore file
 ### 1.2.0 Better CLI responses
 ### 1.1.1 Fixed listing of running containers
