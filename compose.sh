@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.3.0
-### ChangeNotes: Better help menu, Ports action - See README.md for past changes.
+VERSION=v1.4.0
+### ChangeNotes: Fixed list action and added edit action - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -22,7 +22,7 @@ c_reset="\033[0m"
 
 ### Help Function:
 Help() {
-  echo "Syntax:     compose.sh [OPTIONS]" 
+  echo "Syntax:     compose.sh [OPTIONS]"     
   echo "Example:    compose.sh -a list"
   echo
   echo "Options:"
@@ -121,7 +121,7 @@ CheckStatus() {
 
 ReturnStatus() {
     CheckFolderSupplied $1
-    status=$($DockerBin ls -a --filter name="$1" --format=table | grep -Eo '(exited\([0-9]+\)|running\([0-9]+\)|paused\([0-9]+\)|stopped\([0-9]+\))' | paste -sd ', ' -)
+    status=$($DockerBin ls -a --filter name="$1" --format=table | grep -w "^$1 " | grep -Eo '(exited\([0-9]+\)|running\([0-9]+\)|paused\([0-9]+\)|stopped\([0-9]+\))' | paste -sd ', ' -)
 
     if [ -n "$status" ]; then
         echo $status
@@ -201,6 +201,9 @@ CheckAction() {
         ports)
             CheckPorts
             ;;
+        edit)
+            EditCompose $folder
+            ;;
         help)
             Help
             ;;
@@ -275,7 +278,7 @@ Update() {
 }
 
 List() {
-    printf "%15s    %s     %s\n" "Service" "Status" "  Container(s)";
+    printf "%25s    %s     %s\n" "Service" "Status" "  Container(s)";
     for dir in $APPS/*/; do
         path=$(basename $dir)
         status=$(ReturnStatus $path)
@@ -284,11 +287,11 @@ List() {
         fi
         if [ -f "$dir/$COMPOSE_FILE" ]; then
             #echo -e $path ['\033[32menabled\033[0m'] - [$status]
-            printf "%15s    %b%s%b     %s\n" $path "$c_green" "Enabled " "$c_reset" $status;
+            printf "%25s    %b%s%b     %s\n" $path "$c_green" "Enabled " "$c_reset" $status;
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
             #echo -e $path ['\033[31mdisabled\033[0m'] - [$status]
-            printf "%15s    %b%s%b     %s\n" $path "$c_red" "Disabled" "$c_reset" $status;
+            printf "%25s    %b%s%b     %s\n" $path "$c_red" "Disabled" "$c_reset" $status;
         fi
     done
 }
@@ -388,6 +391,27 @@ Stop() {
         BulkAction stop "$1"
     else
         BulkAction stop
+    fi
+}
+
+EditCompose() {
+    file_to_edit="$APPS/$1/$COMPOSE_FILE"
+    if ! CheckFolderSuppliedNoExit "$1"; then
+        echo -e "\033[31mError: Compose File does not exist\033[0m [$file_to_edit]"
+        exit
+    fi
+
+    if [ ! -f "$file_to_edit" ]; then
+        echo -e "\033[31mError: Compose File does not exist\033[0m [$file_to_edit]"
+        exit
+    fi
+    
+    printf "%s\n" "--- Editing $1 compose file ---"
+
+    if ! command -v nano &> /dev/null; then
+        vim "$file_to_edit"
+    else
+        nano "$file_to_edit"
     fi
 }
 
