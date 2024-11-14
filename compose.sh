@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.4.0
-### ChangeNotes: Fixed list action and added edit action - See README.md for past changes.
+VERSION=v1.4.5
+### ChangeNotes: Added Env action and fixed edit action - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -48,6 +48,8 @@ Help() {
   printf "%s %15s\n" "Version" "    Display version";
   printf "%s %15s\n" "Update" "     Update script";
   printf "%s %15s\n" "Ports" "      Show ports from ENV file";
+  printf "%s %15s\n" "Edit" "       Edit service";
+  printf "%s %15s\n" "Env" "        Edit env file";
 
 }
 
@@ -202,7 +204,10 @@ CheckAction() {
             CheckPorts
             ;;
         edit)
-            EditCompose $folder
+            EditFile $folder
+            ;;
+        env)
+            EditFile env
             ;;
         help)
             Help
@@ -394,19 +399,25 @@ Stop() {
     fi
 }
 
-EditCompose() {
-    file_to_edit="$APPS/$1/$COMPOSE_FILE"
-    if ! CheckFolderSuppliedNoExit "$1"; then
-        echo -e "\033[31mError: Compose File does not exist\033[0m [$file_to_edit]"
-        exit
+EditFile() {
+    if [ "$1" == "env" ]; then
+        file_to_edit="$envFile"
+    else
+        file_to_edit="$APPS/$1/$COMPOSE_FILE"
+        
+        # Only check the folder if $1 is not "env"
+        if ! CheckFolderSuppliedNoExit "$1"; then
+            echo -e "\033[31mError: Compose File does not exist\033[0m [$file_to_edit]"
+            exit
+        fi
     fi
 
     if [ ! -f "$file_to_edit" ]; then
-        echo -e "\033[31mError: Compose File does not exist\033[0m [$file_to_edit]"
+        echo -e "\033[31mError: File does not exist\033[0m [$file_to_edit]"
         exit
     fi
     
-    printf "%s\n" "--- Editing $1 compose file ---"
+    printf "%s\n" "--- Editing $1 file ---"
 
     if ! command -v nano &> /dev/null; then
         vim "$file_to_edit"
@@ -414,6 +425,7 @@ EditCompose() {
         nano "$file_to_edit"
     fi
 }
+
 
 Start() {
     if CheckFolderSuppliedNoExit "$1"; then
