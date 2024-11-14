@@ -17,7 +17,7 @@ _dc_completions() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     
     # Define possible completions for the first argument (for -a)
-    opts_a="action help up down start stop restart pause unpause enable disable list create remove version update ports"
+    opts_a="action help up down start stop restart pause unpause enable disable list create remove version update ports edit env"
     
     # Populate opts_s with directories in a specific folder for the second argument (for -s)
     opts_s=$(ls -d /home/docker/docker/*/ 2>/dev/null | xargs -n 1 basename)
@@ -38,6 +38,7 @@ complete -F _dc_completions dc
 
 ## Changes
 
+### 1.4.5 Added Env action and fixed edit action
 ### 1.4.0 Fixed list action and added edit action
 ### 1.3.0 Better help menu, Ports action
 ### 1.2.1 Added gitignore file
