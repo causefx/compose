@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.4.5
-### ChangeNotes: Added Env action and fixed edit action - See README.md for past changes.
+VERSION=v1.5.0
+### ChangeNotes: Updated edit function to check disabled services - See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -167,6 +167,10 @@ CheckAction() {
         restart)
             printf "%s\n" "--- Restarting services ---"
             SimpleAction "restart" $folder
+            ;;
+        build)
+            printf "%s\n" "--- Building services ---"
+            SimpleAction "build" $folder
             ;;
         pause)
             printf "%s\n" "--- Pausing services ---"
@@ -404,17 +408,25 @@ EditFile() {
         file_to_edit="$envFile"
     else
         file_to_edit="$APPS/$1/$COMPOSE_FILE"
+        backup_file_to_edit="$APPS/$1/$COMPOSE_FILE_DISABLED"
         
         # Only check the folder if $1 is not "env"
         if ! CheckFolderSuppliedNoExit "$1"; then
-            echo -e "\033[31mError: Compose File does not exist\033[0m [$file_to_edit]"
-            exit
+            echo -e "\033[31mError: No service name supplied\033[0m"
+            exit 1
         fi
     fi
 
-    if [ ! -f "$file_to_edit" ]; then
-        echo -e "\033[31mError: File does not exist\033[0m [$file_to_edit]"
-        exit
+    # Check for existence of files
+    if [ -f "$file_to_edit" ]; then
+        echo -e "\033[32mUsing primary file: $file_to_edit\033[0m"
+    elif [ -f "$backup_file_to_edit" ]; then
+        echo -e "\033[33mPrimary file not found. Using backup file: $backup_file_to_edit\033[0m"
+        file_to_edit="$backup_file_to_edit"
+    else
+        echo -e "\033[31mError: Neither primary nor backup file exists\033[0m"
+        echo -e "\033[31mChecked:\n - $file_to_edit\n - $backup_file_to_edit\033[0m"
+        exit 1
     fi
     
     printf "%s\n" "--- Editing $1 file ---"
