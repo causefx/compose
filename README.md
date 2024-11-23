@@ -38,6 +38,7 @@ complete -F _dc_completions dc
 
 ## Changes
 
+### 1.5.0 Updated edit function to check disabled services
 ### 1.4.5 Added Env action and fixed edit action
 ### 1.4.0 Fixed list action and added edit action
 ### 1.3.0 Better help menu, Ports action
