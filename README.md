@@ -38,7 +38,7 @@ complete -F _dc_completions dc
 
 ## Changes
 
-### 1.6.0 Added images and pull actions
+### 1.6.0 Added images and pull actions, with a prompt before pulling disabled images
 ### 1.5.0 Updated edit function to check disabled services
 ### 1.4.5 Added Env action and fixed edit action
 ### 1.4.0 Fixed list action and added edit action

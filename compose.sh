@@ -44,7 +44,7 @@ Help() {
   printf "%s %15s\n" "Disable" "    Disable service(s)";
   printf "%s %15s\n" "List" "       List service(s)";
   printf "%s %15s\n" "Images" "     List compose images and tags";
-  printf "%s %15s\n" "Pull" "       List compose images, then docker pull";
+  printf "%s %15s\n" "Pull" "       Pull compose images; asks about disabled";
   printf "%s %15s\n" "Create" "     Create service";
   printf "%s %15s\n" "Remove" "     Remove service";
   printf "%s %15s\n" "Version" "    Display version";
@@ -793,19 +793,36 @@ GetFileImages() {
     fi
 }
 
+PrintMissingTags() {
+    local ref missing=0
+    for ref in "$@"; do
+        if [ "$(ImageTag "$ref")" = "-" ]; then
+            missing=$((missing+1))
+        fi
+    done
+    if [ "$missing" -gt 0 ]; then
+        printf "%s\n" "${missing} image(s) have no tag and will pull as latest."
+    fi
+}
+
 ShowImages() {
     local mode="$1"
     local -a pull_refs=()
+    local -a enabled_refs=()
+    local -a disabled_refs=()
+    local -a disabled_only_refs=()
+    local -a chosen_refs=()
     local -A seen_pull=()
+    local -A seen_enabled=()
+    local -A seen_disabled=()
     local -A seen_row=()
     local count=0
     local found_file=0
-    local missing_unique=0
     local failed=0
     local index=1
     local total=0
     local dir path path_lc state file img tag row_key state_color state_label
-    local answer img_ref
+    local answer img_ref include_disabled=0 pull_enabled=0
     local had_nullglob=0
 
     if shopt -q nullglob; then
@@ -855,6 +872,15 @@ ShowImages() {
                     seen_pull["$img"]=1
                     pull_refs+=("$img")
                 fi
+                if [ "$state" = "Enabled" ]; then
+                    if [ -z "${seen_enabled[$img]+x}" ]; then
+                        seen_enabled["$img"]=1
+                        enabled_refs+=("$img")
+                    fi
+                elif [ -z "${seen_disabled[$img]+x}" ]; then
+                    seen_disabled["$img"]=1
+                    disabled_refs+=("$img")
+                fi
             done < <(GetFileImages "$file")
         done
     done
@@ -868,40 +894,72 @@ ShowImages() {
         exit 1
     fi
 
-    printf "\n%s\n" "${count} image(s) listed, ${#pull_refs[@]} unique."
-    for img_ref in "${pull_refs[@]}"; do
-        if [ "$(ImageTag "$img_ref")" = "-" ]; then
-            missing_unique=$((missing_unique+1))
+    for img_ref in "${disabled_refs[@]}"; do
+        if [ -z "${seen_enabled[$img_ref]+x}" ]; then
+            disabled_only_refs+=("$img_ref")
         fi
     done
-    if [ "$missing_unique" -gt 0 ]; then
-        printf "%s\n" "${missing_unique} image(s) have no tag and will pull as latest."
+
+    printf "\n%s\n" "${count} image(s) listed, ${#pull_refs[@]} unique."
+    if [ ${#disabled_only_refs[@]} -gt 0 ]; then
+        printf "%s\n" "${#disabled_only_refs[@]} image(s) are only used by disabled services."
     fi
 
     if [ "$mode" != "pull" ]; then
+        PrintMissingTags "${pull_refs[@]}"
         return 0
     fi
 
-    if [ ${#pull_refs[@]} -eq 0 ]; then
+    if [ ${#enabled_refs[@]} -eq 0 ] && [ ${#disabled_only_refs[@]} -eq 0 ]; then
         echo "No images to pull."
         return 0
     fi
 
-    if [ -z "$folder" ]; then
-        read -r -p "Pull ${#pull_refs[@]} unique image(s) from enabled and disabled compose files? ([Y]es/[n]o) " answer
-        if [[ "$answer" != [yY] ]]; then
-            echo "Exiting"
-            return 0
+    if [ ${#enabled_refs[@]} -gt 0 ]; then
+        if [ -n "$folder" ]; then
+            pull_enabled=1
+        else
+            read -r -p "Pull ${#enabled_refs[@]} unique image(s) from enabled services? ([Y]es/[n]o) " answer
+            if [[ "$answer" == [yY] ]]; then
+                pull_enabled=1
+            fi
         fi
     fi
+
+    if [ ${#disabled_only_refs[@]} -gt 0 ]; then
+        if [ "$pull_enabled" -eq 1 ]; then
+            read -r -p "Also pull ${#disabled_only_refs[@]} image(s) from disabled services? ([y]es/[N]o) " answer
+        else
+            read -r -p "Pull ${#disabled_only_refs[@]} image(s) from disabled services? ([y]es/[N]o) " answer
+        fi
+        if [[ "$answer" == [yY] ]]; then
+            include_disabled=1
+        fi
+    fi
+
+    if [ "$pull_enabled" -eq 1 ]; then
+        chosen_refs=("${enabled_refs[@]}")
+    fi
+    if [ "$include_disabled" -eq 1 ]; then
+        for img_ref in "${disabled_only_refs[@]}"; do
+            chosen_refs+=("$img_ref")
+        done
+    fi
+
+    if [ ${#chosen_refs[@]} -eq 0 ]; then
+        echo "No images to pull."
+        return 0
+    fi
+
+    PrintMissingTags "${chosen_refs[@]}"
 
     if ! command -v docker >/dev/null 2>&1; then
         echo -e "${c_red}docker is not available, cannot pull images.${c_reset}"
         exit 1
     fi
 
-    total=${#pull_refs[@]}
-    for img_ref in "${pull_refs[@]}"; do
+    total=${#chosen_refs[@]}
+    for img_ref in "${chosen_refs[@]}"; do
         printf "%s\n" "--- Pulling (${index}/${total}) ${img_ref} ---"
         if ! docker pull "$img_ref"; then
             echo -e "${c_red}Failed to pull${c_reset} [${img_ref}]"
