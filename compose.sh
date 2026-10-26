@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.5.0
-### ChangeNotes: Updated edit function to check disabled services - See README.md for past changes.
+VERSION=v1.6.0
+### ChangeNotes: Added images and pull actions. See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 SCRIPT_ARGS=( "$@" )
@@ -43,6 +43,8 @@ Help() {
   printf "%s %15s\n" "Enable" "     Enable service(s)";
   printf "%s %15s\n" "Disable" "    Disable service(s)";
   printf "%s %15s\n" "List" "       List service(s)";
+  printf "%s %15s\n" "Images" "     List compose images and tags";
+  printf "%s %15s\n" "Pull" "       List compose images, then docker pull";
   printf "%s %15s\n" "Create" "     Create service";
   printf "%s %15s\n" "Remove" "     Remove service";
   printf "%s %15s\n" "Version" "    Display version";
@@ -191,6 +193,12 @@ CheckAction() {
         list)
             List
             ;;
+        images)
+            ShowImages list
+            ;;
+        pull)
+            ShowImages pull
+            ;;
         create)
             printf "%s\n" "--- Creating service ---"
             Create $folder
@@ -217,13 +225,13 @@ CheckAction() {
             Help
             ;;
         *)
-            echo "Invalid option. Please use up, down, restart, list, create, enable or disable."
+            echo "Invalid option. Please use up, down, restart, list, images, pull, create, enable or disable."
             Help
             exit
             ;;
     esac
     if [ -z "$action" ]; then
-        echo "Invalid option. Please use up, down, restart, list, create, enable or disable."
+        echo "Invalid option. Please use up, down, restart, list, images, pull, create, enable or disable."
         exit
     fi
 }
@@ -526,6 +534,388 @@ CheckPorts() {
     done
 }
 
+
+### Image listing and pull
+
+# Tag is the text after the last colon that belongs to the repository,
+# not a registry port. localhost:5000/nginx has no tag; nginx:1.25 does.
+ImageTag() {
+    local ref="$1"
+    local base="${ref%%@*}"
+    local repo="${base##*/}"
+    local tag
+
+    if [[ "$repo" == *:* ]]; then
+        tag="${repo##*:}"
+        if [ -n "$tag" ]; then
+            printf '%s' "$tag"
+            return
+        fi
+    fi
+
+    if [ "$ref" != "$base" ]; then
+        printf '%s' "digest"
+        return
+    fi
+
+    printf '%s' "-"
+}
+
+ImageRefUnresolved() {
+    local ref="$1"
+    case "$ref" in
+        *'$'*|*'{{'*|'>'*|'|'*|'*'*|'!'*|*' '*|*':') return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+VarIsSet() {
+    local name="$1"
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    eval "[ \"\${${name}+x}\" = x ]"
+}
+
+VarValue() {
+    local name="$1"
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    eval "printf '%s' \"\${${name}-}\""
+}
+
+CleanImageRef() {
+    local val="$1"
+    val="${val//$'\r'/}"
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+
+    if [[ "$val" == \"* ]]; then
+        val="${val:1}"
+        val="${val%%\"*}"
+    elif [[ "$val" == \'* ]]; then
+        val="${val:1}"
+        val="${val%%\'*}"
+    else
+        val="${val%%#*}"
+        val="${val#"${val%%[![:space:]]*}"}"
+        val="${val%"${val##*[![:space:]]}"}"
+    fi
+
+    printf '%s' "$val"
+}
+
+# Expand $VAR, ${VAR}, ${VAR:-default}, and ${VAR-default} from the sourced env file.
+ExpandComposeValue() {
+    local input="$1"
+    local result=""
+    local rest="$input"
+    local name default match value
+
+    while [ -n "$rest" ]; do
+        if [[ "$rest" == \$\$* ]]; then
+            result+='$'
+            rest="${rest:2}"
+            continue
+        fi
+
+        if [[ "$rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-)([^}]*)\} ]]; then
+            name="${BASH_REMATCH[1]}"
+            default="${BASH_REMATCH[3]}"
+            match="${BASH_REMATCH[0]}"
+            if VarIsSet "$name"; then
+                value="$(VarValue "$name")"
+                if [ -z "$value" ]; then
+                    value="$default"
+                fi
+            else
+                value="$default"
+            fi
+            result+="$value"
+            rest="${rest:${#match}}"
+            continue
+        fi
+
+        if [[ "$rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)-([^}]*)\} ]]; then
+            name="${BASH_REMATCH[1]}"
+            default="${BASH_REMATCH[2]}"
+            match="${BASH_REMATCH[0]}"
+            if VarIsSet "$name"; then
+                value="$(VarValue "$name")"
+            else
+                value="$default"
+            fi
+            result+="$value"
+            rest="${rest:${#match}}"
+            continue
+        fi
+
+        if [[ "$rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; then
+            name="${BASH_REMATCH[1]}"
+            match="${BASH_REMATCH[0]}"
+            if VarIsSet "$name"; then
+                value="$(VarValue "$name")"
+            else
+                value=""
+            fi
+            result+="$value"
+            rest="${rest:${#match}}"
+            continue
+        fi
+
+        if [[ "$rest" =~ ^\$([A-Za-z_][A-Za-z0-9_]*) ]]; then
+            name="${BASH_REMATCH[1]}"
+            match="${BASH_REMATCH[0]}"
+            if VarIsSet "$name"; then
+                value="$(VarValue "$name")"
+            else
+                value=""
+            fi
+            result+="$value"
+            rest="${rest:${#match}}"
+            continue
+        fi
+
+        result+="${rest:0:1}"
+        rest="${rest:1}"
+    done
+
+    printf '%s' "$result"
+}
+
+ParseImageStream() {
+    local line val
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line//$'\r'/}"
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[[:space:]]*image:[[:space:]]*(.*)$ ]] || continue
+        val="$(CleanImageRef "${BASH_REMATCH[1]}")"
+        printf '%s\n' "$val"
+    done
+}
+
+ExtractImageRefs() {
+    ParseImageStream < "$1"
+}
+
+FileUsesExtends() {
+    grep -Eq '^[[:space:]]*extends:' "$1"
+}
+
+ComposeConfigImages() {
+    local file="$1"
+    local output status err line
+    err="$(mktemp)" || return 1
+
+    output=$($DockerBin --file "$file" --env-file "$envFile" config --images 2>"$err")
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        rm -f "$err"
+        while IFS= read -r line || [ -n "$line" ]; do
+            line="$(CleanImageRef "$line")"
+            [ -n "$line" ] && printf '%s\n' "$line"
+        done <<< "$output"
+        return 0
+    fi
+
+    output=$($DockerBin --file "$file" --env-file "$envFile" config 2>"$err")
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        rm -f "$err"
+        printf '%s\n' "$output" | ParseImageStream
+        return 0
+    fi
+
+    rm -f "$err"
+    return 1
+}
+
+GetFileImages() {
+    local file="$1"
+    local -a refs=()
+    local -A seen=()
+    local img exp resolved line
+    local unresolved=0
+    local tried=0
+    local ok=0
+    local before=0
+    local warn=0
+
+    while IFS= read -r img || [ -n "$img" ]; do
+        if [ -z "$img" ]; then
+            unresolved=$((unresolved+1))
+            continue
+        fi
+        exp="$(ExpandComposeValue "$img")"
+        case "$exp" in
+            ""|~|null|Null|NULL) unresolved=$((unresolved+1)) ; continue ;;
+        esac
+        if ImageRefUnresolved "$exp"; then
+            unresolved=$((unresolved+1))
+            continue
+        fi
+        if [ -z "${seen[$exp]+x}" ]; then
+            seen["$exp"]=1
+            refs+=("$exp")
+        fi
+    done < <(ExtractImageRefs "$file")
+
+    before=${#refs[@]}
+    if [ "$unresolved" -gt 0 ] || FileUsesExtends "$file"; then
+        tried=1
+        if resolved="$(ComposeConfigImages "$file")"; then
+            ok=1
+            while IFS= read -r line || [ -n "$line" ]; do
+                [ -z "$line" ] && continue
+                if ImageRefUnresolved "$line"; then
+                    continue
+                fi
+                case "$line" in
+                    ""|~|null|Null|NULL) continue ;;
+                esac
+                if [ -z "${seen[$line]+x}" ]; then
+                    seen["$line"]=1
+                    refs+=("$line")
+                fi
+            done <<< "$resolved"
+        fi
+    fi
+
+    if [ "$tried" -eq 1 ] && [ "$ok" -eq 0 ]; then
+        warn=1
+    fi
+    if [ "$unresolved" -gt 0 ] && [ "${#refs[@]}" -le "$before" ]; then
+        warn=1
+    fi
+    if [ "$warn" -eq 1 ]; then
+        echo -e "${c_yellow}Warning:${c_reset} could not resolve every image in $(basename "$(dirname "$file")")/$(basename "$file")" >&2
+    fi
+
+    if [ ${#refs[@]} -gt 0 ]; then
+        printf '%s\n' "${refs[@]}"
+    fi
+}
+
+ShowImages() {
+    local mode="$1"
+    local -a pull_refs=()
+    local -A seen_pull=()
+    local -A seen_row=()
+    local count=0
+    local found_file=0
+    local missing_unique=0
+    local failed=0
+    local index=1
+    local total=0
+    local dir path path_lc state file img tag row_key state_color state_label
+    local answer img_ref
+    local had_nullglob=0
+
+    if shopt -q nullglob; then
+        had_nullglob=1
+    fi
+    shopt -s nullglob
+
+    if [ -n "$folder" ] && [ "$folder" != "all" ]; then
+        printf "%s\n" "--- Compose images for ${folder} ---"
+    else
+        printf "%s\n" "--- Compose images ---"
+    fi
+    printf "%25s  %-8s  %-18s  %s\n" "Service" "Status" "Tag" "Image"
+
+    for dir in "$APPS"/*/; do
+        [ -d "$dir" ] || continue
+        path="$(basename "$dir")"
+        path_lc="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+        if [ -n "$folder" ] && [ "$folder" != "all" ] && [ "$path_lc" != "$folder" ]; then
+            continue
+        fi
+
+        for state in Enabled Disabled; do
+            if [ "$state" = "Enabled" ]; then
+                file="${dir}${COMPOSE_FILE}"
+                state_color="$c_green"
+                state_label="Enabled "
+            else
+                file="${dir}${COMPOSE_FILE_DISABLED}"
+                state_color="$c_red"
+                state_label="Disabled"
+            fi
+            [ -f "$file" ] || continue
+            found_file=1
+
+            while IFS= read -r img; do
+                [ -z "$img" ] && continue
+                row_key="${path}|${state}|${img}"
+                if [ -n "${seen_row[$row_key]+x}" ]; then
+                    continue
+                fi
+                seen_row["$row_key"]=1
+                tag="$(ImageTag "$img")"
+                printf "%25s  %b%s%b  %-18s  %s\n" "$path" "$state_color" "$state_label" "$c_reset" "$tag" "$img"
+                count=$((count+1))
+                if [ -z "${seen_pull[$img]+x}" ]; then
+                    seen_pull["$img"]=1
+                    pull_refs+=("$img")
+                fi
+            done < <(GetFileImages "$file")
+        done
+    done
+
+    if [ "$had_nullglob" -eq 0 ]; then
+        shopt -u nullglob
+    fi
+
+    if [ -n "$folder" ] && [ "$folder" != "all" ] && [ "$found_file" -eq 0 ]; then
+        echo "Service does not exist..."
+        exit 1
+    fi
+
+    printf "\n%s\n" "${count} image(s) listed, ${#pull_refs[@]} unique."
+    for img_ref in "${pull_refs[@]}"; do
+        if [ "$(ImageTag "$img_ref")" = "-" ]; then
+            missing_unique=$((missing_unique+1))
+        fi
+    done
+    if [ "$missing_unique" -gt 0 ]; then
+        printf "%s\n" "${missing_unique} image(s) have no tag and will pull as latest."
+    fi
+
+    if [ "$mode" != "pull" ]; then
+        return 0
+    fi
+
+    if [ ${#pull_refs[@]} -eq 0 ]; then
+        echo "No images to pull."
+        return 0
+    fi
+
+    if [ -z "$folder" ]; then
+        read -r -p "Pull ${#pull_refs[@]} unique image(s) from enabled and disabled compose files? ([Y]es/[n]o) " answer
+        if [[ "$answer" != [yY] ]]; then
+            echo "Exiting"
+            return 0
+        fi
+    fi
+
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "${c_red}docker is not available, cannot pull images.${c_reset}"
+        exit 1
+    fi
+
+    total=${#pull_refs[@]}
+    for img_ref in "${pull_refs[@]}"; do
+        printf "%s\n" "--- Pulling (${index}/${total}) ${img_ref} ---"
+        if ! docker pull "$img_ref"; then
+            echo -e "${c_red}Failed to pull${c_reset} [${img_ref}]"
+            failed=$((failed+1))
+        fi
+        index=$((index+1))
+    done
+
+    if [ "$failed" -gt 0 ]; then
+        echo -e "${c_red}${failed} image(s) failed to pull${c_reset}"
+        exit 1
+    fi
+    echo -e "${c_green}Pulled ${total} image(s)${c_reset}"
+}
 
 # Do the Things
 CheckEnv;
