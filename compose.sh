@@ -1,8 +1,9 @@
 #!/bin/bash
 VERSION=v1.6.0
-### ChangeNotes: Added images and pull actions. See README.md for past changes.
+### ChangeNotes: Added images, pull, and dc.bash. See README.md for past changes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
+GITHUB_RAW_DC="https://raw.githubusercontent.com/causefx/compose/main/dc.bash"
 SCRIPT_ARGS=( "$@" )
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_NAME="$(basename "$SCRIPT_PATH")"
@@ -262,26 +263,62 @@ CheckVersion() {
     fi
 }
 
-UpdateCurl() {
-  cp "$SCRIPT_PATH" "$SCRIPT_PATH".bak
-  if [[ $(builtin type -P curl) ]]; then
-    curl -L $GITHUB_RAWURL > "$SCRIPT_PATH" ; chmod +x "$SCRIPT_PATH"
-    printf "\n%s\n" "--- starting over with the updated version ---"
-    exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
-    exit 1 # exit the old instance
-  elif [[ $(builtin type -P wget) ]]; then
-    wget $GITHUB_RAWURL -O "$SCRIPT_PATH" ; chmod +x "$SCRIPT_PATH"
-    printf "\n%s\n" "--- starting over with the updated version ---"
-    exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
-    exit 1 # exit the old instance
-  else
-    printf "curl/wget not available - download the update manually: %s \n" "$GITHUB"
+DownloadFile() {
+  local url="$1"
+  local dest="$2"
+  if [[ -n "$(builtin type -P curl)" ]]; then
+    curl -fsSL "$url" -o "$dest"
+    return $?
+  elif [[ -n "$(builtin type -P wget)" ]]; then
+    wget -q "$url" -O "$dest"
+    return $?
   fi
+  return 127
+}
+
+UpdateCurl() {
+  local tmp_script tmp_dc dc_path
+  dc_path="$SCRIPT_WORKING_DIR/dc.bash"
+
+  if [[ -z "$(builtin type -P curl)" && -z "$(builtin type -P wget)" ]]; then
+    printf "curl/wget not available - download the update manually: %s \n" "$GITHUB"
+    return
+  fi
+
+  tmp_script="$(mktemp)" || return
+  tmp_dc="$(mktemp)" || { rm -f "$tmp_script"; return; }
+
+  if ! DownloadFile "$GITHUB_RAWURL" "$tmp_script" || ! DownloadFile "$GITHUB_RAW_DC" "$tmp_dc"; then
+    rm -f "$tmp_script" "$tmp_dc"
+    printf "Download failed. Script was not changed.\n"
+    return
+  fi
+
+  cp "$SCRIPT_PATH" "$SCRIPT_PATH".bak
+  if [[ -f "$dc_path" ]]; then
+    cp "$dc_path" "$dc_path".bak
+  fi
+
+  if ! cp "$tmp_script" "$SCRIPT_PATH" || ! cp "$tmp_dc" "$dc_path"; then
+    cp "$SCRIPT_PATH".bak "$SCRIPT_PATH"
+    if [[ -f "$dc_path".bak ]]; then
+      cp "$dc_path".bak "$dc_path"
+    fi
+    rm -f "$tmp_script" "$tmp_dc"
+    printf "Could not install the update.\n"
+    return
+  fi
+
+  chmod +x "$SCRIPT_PATH"
+  rm -f "$tmp_script" "$tmp_dc"
+  printf "\n%s\n" "--- starting over with the updated version ---"
+  exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
+  exit 1 # exit the old instance
 }
 
 Update() {
   cd "$SCRIPT_WORKING_DIR" || { printf "Path error, skipping update.\n" ; return ; }
-  if [[ $(builtin type -P git) ]] && [[ "$(git ls-remote --get-url 2>/dev/null)" =~ .*"mag37/dockcheck".* ]] ; then
+  if [[ -n "$(builtin type -P git)" ]] && [[ "$(git ls-remote --get-url 2>/dev/null)" =~ .*"causefx/compose".* ]] ; then
     printf "\n%s\n" "Pulling the latest version."
     git pull --force || { printf "Git error, manually pull/clone.\n" ; return ; }
     printf "\n%s\n" "--- starting over with the updated version ---"

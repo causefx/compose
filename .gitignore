@@ -4,4 +4,6 @@
 # But not these files...
 !.gitignore
 !compose.sh
+!dc.bash
+!README.md
 !.env.example

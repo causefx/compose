@@ -2,43 +2,41 @@
 Personal docker compose management
 
 ## Setup
-Coming soon
 
-### .bashrc
-#### Change path to compose file on both functions
+`dc` is the short command for `compose.sh`. The function and its Tab completion live in `dc.bash`, next to the script. On a new install, `~/.bashrc` gets one `source` line. That line stays put when the helper changes.
+
+### New install
+
+1. Clone this repo into the directory that holds your app folders, for example `/home/docker/docker`.
+2. Copy `.env.example` to `.env` and set `APPS` to that directory.
+3. Add this line to `~/.bashrc`. Use the directory from step 1:
+
+```bash
+source /home/docker/docker/dc.bash
 ```
-# Define helper function
-function dc { /home/docker/docker/compose.sh -a "$1" -s "$2"; }
 
-# Define the autocompletion function for dc
-_dc_completions() {
-    local cur prev opts_a opts_s
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-    
-    # Define possible completions for the first argument (for -a)
-    opts_a="action help up down start stop restart pause unpause enable disable list images pull create remove version update ports edit env"
-    
-    # Populate opts_s with directories in a specific folder for the second argument (for -s)
-    opts_s=$(ls -d /home/docker/docker/*/ 2>/dev/null | xargs -n 1 basename)
+4. Open a new shell.
 
-    # Determine whether we're completing the first or second argument
-    if [[ "$COMP_CWORD" -eq 1 ]]; then
-        # Suggest options for the first argument
-        COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
-    elif [[ "$COMP_CWORD" -eq 2 ]]; then
-        # Suggest options for the second argument
-        COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
-    fi
-}
-
-# Register the completion function for dc
-complete -F _dc_completions dc
+```bash
+dc list
+dc up plex
+dc images
+dc pull
 ```
+
+`dc` takes an action and an optional service name. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`.
+
+### Updates
+
+```bash
+dc update
+```
+
+That downloads a new `compose.sh` and a new `dc.bash`. On a git checkout of this repo, the same command pulls the repo and updates both files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
 
 ## Changes
 
-### 1.6.0 Added images and pull actions, with a prompt before pulling disabled images
+### 1.6.0 Added images and pull actions, and a sourced dc.bash helper
 ### 1.5.0 Updated edit function to check disabled services
 ### 1.4.5 Added Env action and fixed edit action
 ### 1.4.0 Fixed list action and added edit action
