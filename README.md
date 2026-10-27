@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.16 ps keeps blank ports from moving the service name
 ### 1.7.15 update downloads once and repull does not loop
 ### 1.7.14 ps lists every container from docker ps
 ### 1.7.13 Clearer banner, image rows, and ps table

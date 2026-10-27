@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.15
-### ChangeNotes: update downloads once and repull does not loop.
+VERSION=v1.7.16
+### ChangeNotes: ps keeps blank ports from moving the service name.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -919,8 +919,10 @@ ShortenPorts() {
 Ps() {
     local cname cstatus cports project service low
     local -a row_svc=() row_name=() row_status=() row_ports=()
+    local -a raw=() ordered=()
     local svc_w name_w status_w i ports_text mark color
-    local fmt=$'{{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}'
+    local sep=$'\x1e' line extra count
+    local fmt="{{.Names}}${sep}{{.Status}}${sep}{{.Ports}}${sep}{{.Label \"com.docker.compose.project\"}}"
     local want="" have_dir=0
 
     Banner "ps"
@@ -936,17 +938,42 @@ Ps() {
         Say bad "docker ps failed."
         return 1
     fi
-    while IFS=$'\t' read -r cname cstatus cports project; do
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        count=0
+        extra="$line"
+        while [[ "$extra" == *"$sep"* ]]; do
+            extra="${extra#*"$sep"}"
+            count=$((count+1))
+        done
+        while [[ "$count" -lt 3 ]]; do
+            IFS= read -r extra || break
+            line+=" $extra"
+            while [[ "$extra" == *"$sep"* ]]; do
+                extra="${extra#*"$sep"}"
+                count=$((count+1))
+            done
+        done
+        raw+=("$line")
+    done < <(docker ps -a --format "$fmt")
+
+    for line in "${raw[@]}"; do
+        IFS=$sep read -r cname cstatus cports project <<< "$line"
         [[ -z "$cname" ]] && continue
         service="${project:-"-"}"
         if [[ -n "$want" && "${service,,}" != "$want" ]]; then
             continue
         fi
-        row_svc+=("$service")
-        row_name+=("$cname")
-        row_status+=("$cstatus")
-        row_ports+=("$(ShortenPorts "$cports")")
-    done < <(docker ps -a --format "$fmt" | sort -t $'\t' -k4,4 -k1,1)
+        ordered+=("${service}${sep}${cname}${sep}${cstatus}${sep}$(ShortenPorts "$cports")")
+    done
+    if [[ ${#ordered[@]} -gt 0 ]]; then
+        while IFS=$sep read -r service cname cstatus cports; do
+            [[ -z "$cname" ]] && continue
+            row_svc+=("$service")
+            row_name+=("$cname")
+            row_status+=("$cstatus")
+            row_ports+=("$cports")
+        done < <(printf '%s\n' "${ordered[@]}" | sort -t "$sep" -k1,1 -k2,2)
+    fi
 
     if [[ ${#row_name[@]} -eq 0 ]]; then
         if [[ -n "$want" && "$have_dir" -eq 0 ]]; then
