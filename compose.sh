@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.12
-### ChangeNotes: One action list drives help and completion.
+VERSION=v1.7.13
+### ChangeNotes: Clearer banner, image rows, and ps table.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -21,10 +21,19 @@ c_yellow="\033[0;33m"
 c_blue="\033[0;34m"
 c_teal="\033[0;36m"
 c_dim="\033[2m"
+c_bold="\033[1m"
 c_reset="\033[0m"
 
 Banner() {
-    printf "%b── %s ──%b\n" "$c_teal" "$*" "$c_reset"
+    local title=" ${*^^} "
+    local fill=$(( 44 - ${#title} ))
+    local bar
+    if (( fill < 8 )); then
+        fill=8
+    fi
+    printf -v bar '%*s' "$fill" ''
+    bar="${bar// /━}"
+    printf "\n%b%s%s%b\n" "${c_bold}${c_teal}" "$title" "$bar" "$c_reset"
 }
 
 Say() {
@@ -53,7 +62,7 @@ PaintStatus() {
     local lower
     lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
     case "$lower" in
-        *running*|*healthy*) color="$c_green" ;;
+        up\ *|*running*|*healthy*) color="$c_green" ;;
         *paused*|*restarting*|*created*) color="$c_yellow" ;;
         *exited*|*stopped*|*dead*) color="$c_red" ;;
     esac
@@ -99,7 +108,7 @@ unpause|Unpause service(s)|compose|unpause
 enable|Enable service(s)|enable
 disable|Disable service(s)|disable
 list|List service(s)|list
-ps|Show container(s)|compose|ps
+ps|Show container(s)|ps
 logs|Show service logs|logs
 images|List compose images and tags|images
 pull|Pull images and skip ones already current|pull
@@ -301,6 +310,7 @@ CheckAction() {
                 Toggle disable "$folder"
                 ;;
             list) List ;;
+            ps) Ps ;;
             images) ShowImages list ;;
             pull) ShowImages pull ;;
             create)
@@ -840,6 +850,114 @@ RunServices() {
     fi
     Say bad "Service does not exist."
     exit 1
+}
+
+ShortenPorts() {
+    local raw="$1"
+    local part left right short seen=" " out=""
+    local -a parts=()
+    [[ -z "$raw" ]] && return 0
+    IFS=',' read -r -a parts <<< "$raw"
+    for part in "${parts[@]}"; do
+        part="${part#"${part%%[![:space:]]*}"}"
+        part="${part%"${part##*[![:space:]]}"}"
+        [[ -z "$part" || "$part" == \[* ]] && continue
+        part="${part%/*}"
+        if [[ "$part" == *'->'* ]]; then
+            left="${part%%->*}"
+            right="${part#*->}"
+            left="${left##*:}"
+            if [[ "$left" == "$right" ]]; then
+                short="$left"
+            else
+                short="${left}→${right}"
+            fi
+        else
+            short="${part##*:}"
+        fi
+        [[ -z "$short" || "$seen" == *" $short "* ]] && continue
+        seen+="$short "
+        if [[ -n "$out" ]]; then
+            out+="  $short"
+        else
+            out="$short"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+Ps() {
+    local dir path file line cname cstatus cports
+    local -a row_svc=() row_name=() row_status=() row_ports=()
+    local svc_w name_w status_w i ports_text mark color
+
+    Banner "ps"
+    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+        RunServices "$folder" ps "${EXTRA_ARGS[@]}"
+        return
+    fi
+    if [[ -n "$folder" && "$folder" != "all" ]]; then
+        if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+            file="$APPS/$folder/$COMPOSE_FILE"
+        elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+            Say warn "Service is disabled."
+            exit 1
+        else
+            Say bad "Service does not exist."
+            exit 1
+        fi
+        while IFS=$'\t' read -r cname cstatus cports; do
+            [[ -z "$cname" ]] && continue
+            row_svc+=("$folder")
+            row_name+=("$cname")
+            row_status+=("$cstatus")
+            row_ports+=("$(ShortenPorts "$cports")")
+        done < <("${DockerCmd[@]}" --file "$file" --env-file "$envFile" ps -a --format $'{{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true)
+    else
+        while IFS= read -r dir; do
+            [[ -f "${dir}${COMPOSE_FILE}" ]] || continue
+            path="$(basename "$dir")"
+            file="${dir}${COMPOSE_FILE}"
+            while IFS=$'\t' read -r cname cstatus cports; do
+                [[ -z "$cname" ]] && continue
+                row_svc+=("$path")
+                row_name+=("$cname")
+                row_status+=("$cstatus")
+                row_ports+=("$(ShortenPorts "$cports")")
+            done < <("${DockerCmd[@]}" --file "$file" --env-file "$envFile" ps -a --format $'{{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true)
+        done < <(ServiceDirs)
+    fi
+
+    if [[ ${#row_name[@]} -eq 0 ]]; then
+        Say info "No containers."
+        return 0
+    fi
+    svc_w="$(ColumnWidth 7 "${row_svc[@]}")"
+    name_w="$(ColumnWidth 4 "${row_name[@]}")"
+    status_w="$(ColumnWidth 6 "${row_status[@]}")"
+    printf "%b       %s  │  %s  │  %s  │  %s%b\n" "$c_dim" \
+        "$(PadRight "service" "$svc_w")" "$(PadRight "name" "$name_w")" \
+        "$(PadRight "status" "$status_w")" "ports" "$c_reset"
+    for i in "${!row_name[@]}"; do
+        case "$(printf '%s' "${row_status[$i]}" | tr '[:upper:]' '[:lower:]')" in
+            up\ *|*healthy*) mark="✔"; color="$c_green" ;;
+            *exited*|*dead*) mark="✘"; color="$c_red" ;;
+            *) mark="·"; color="$c_yellow" ;;
+        esac
+        ports_text="${row_ports[$i]}"
+        [[ -z "$ports_text" ]] && ports_text="-"
+        printf "  %b%s%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s\n" \
+            "$color" "$mark" "$c_reset" \
+            "$(PadRight "${row_svc[$i]}" "$svc_w")" \
+            "$c_dim" "$c_reset" \
+            "$(PadRight "${row_name[$i]}" "$name_w")" \
+            "$c_dim" "$c_reset" \
+            "$(PaintStatus "$(PadRight "${row_status[$i]}" "$status_w")")" \
+            "$c_dim" "$c_reset" \
+            "$ports_text"
+    done
+    printf "\n"
+    Say info "${#row_name[@]} container(s)."
 }
 
 Logs() {
@@ -1452,25 +1570,28 @@ ShowImages() {
     done
 
     if [[ "$count" -gt 0 ]]; then
+        local svc_width
+        svc_width="$(ColumnWidth 7 "${disp_path[@]}")"
         tag_width="$(ColumnWidth 3 "${disp_tag[@]}")"
-        printf "%b      %s  │  %s%b\n" "$c_dim" "$(PadRight "tag" "$tag_width")" "image" "$c_reset"
+        printf "%b     %s  │  %s  │  %s%b\n" "$c_dim" \
+            "$(PadRight "service" "$svc_width")" "$(PadRight "tag" "$tag_width")" "image" "$c_reset"
         for i in "${!disp_path[@]}"; do
-            if [[ "$prev" != "${disp_path[$i]}|${disp_state[$i]}" ]]; then
-                if [[ "${disp_state[$i]}" == "Enabled" ]]; then
-                    mark="✔"
-                    color="$c_green"
-                else
-                    mark="✘"
-                    color="$c_red"
-                fi
-                printf "  %b%s%b  %s\n" "$color" "$mark" "$c_reset" "${disp_path[$i]}"
-                prev="${disp_path[$i]}|${disp_state[$i]}"
+            if [[ "${disp_state[$i]}" == "Enabled" ]]; then
+                mark="✔"
+                color="$c_green"
+            else
+                mark="✘"
+                color="$c_red"
             fi
             tag_color="$c_dim"
             [[ "${disp_tag[$i]}" == "-" ]] && tag_color="$c_yellow"
-            printf "      %b%s%b  %b│%b  %s\n" \
+            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+                "$color" "$mark" "$c_reset" \
+                "$(PadRight "${disp_path[$i]}" "$svc_width")" \
+                "$c_dim" "$c_reset" \
                 "$tag_color" "$(PadRight "${disp_tag[$i]}" "$tag_width")" "$c_reset" \
-                "$c_dim" "$c_reset" "${disp_img[$i]}"
+                "$c_dim" "$c_reset" \
+                "${disp_img[$i]}"
         done
     fi
 
