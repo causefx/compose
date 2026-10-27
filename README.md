@@ -9,11 +9,13 @@ Personal docker compose management
 
 1. Clone this repo into the directory that holds your app folders, for example `/home/docker/docker`.
 2. Copy `.env.example` to `.env` and set `APPS` to that directory.
-3. Add this line to `~/.bashrc`. Use the directory from step 1:
+3. Print the `source` line and add it to `~/.bashrc`. Use the directory from step 1:
 
 ```bash
-source /home/docker/docker/dc.bash
+/home/docker/docker/compose.sh -a bashrc >> ~/.bashrc
 ```
+
+That command prints one line, `source /home/docker/docker/dc.bash`, using the path of the script you ran.
 
 4. Open a new shell.
 
@@ -39,6 +41,7 @@ That downloads a new `compose.sh` and a new `dc.bash`. On a git checkout of this
 
 ## Changes
 
+### 1.7.1 Added bashrc action to print the dc.bash source line
 ### 1.7.0 One command runner, logs/ps/config, and update checks only on version and update
 ### 1.6.0 Added images and pull actions, and a sourced dc.bash helper
 ### 1.5.0 Updated edit function to check disabled services

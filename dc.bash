@@ -47,7 +47,7 @@ _dc_completions() {
     local cur opts_a opts_s apps dir name
     cur="${COMP_WORDS[COMP_CWORD]}"
 
-    opts_a="help up down start stop restart build pause unpause enable disable list ps logs images pull config create remove version update ports edit env"
+    opts_a="help up down start stop restart build pause unpause enable disable list ps logs images pull config create remove version update ports edit env bashrc"
     apps="$(_dc_apps_dir)"
     opts_s="all"
     for dir in "$apps"/*/; do

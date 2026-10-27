@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.0
-### ChangeNotes: One command runner, logs/ps/config, update check on demand.
+VERSION=v1.7.1
+### ChangeNotes: Added bashrc action to print the dc.bash source line.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 GITHUB_RAW_DC="https://raw.githubusercontent.com/causefx/compose/main/dc.bash"
@@ -61,6 +61,7 @@ Help() {
   printf "%s %15s\n" "Ports" "      Show ports from ENV file";
   printf "%s %15s\n" "Edit" "       Edit service";
   printf "%s %15s\n" "Env" "        Edit env file";
+  printf "%s %15s\n" "Bashrc" "     Print the dc.bash source line";
 
 }
 
@@ -283,6 +284,9 @@ CheckAction() {
             ;;
         env)
             EditFile env
+            ;;
+        bashrc)
+            PrintBashrc
             ;;
         help)
             Help
@@ -1116,7 +1120,15 @@ ShowImages() {
     echo -e "${c_green}Pulled ${total} image(s)${c_reset}"
 }
 
+PrintBashrc() {
+    printf 'source %q\n' "$SCRIPT_WORKING_DIR/dc.bash"
+}
+
 # Do the Things
+if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "bashrc" ]]; then
+    PrintBashrc
+    exit 0
+fi
 CheckEnv;
 CheckEnvVariables;
 LowerCaseArguments;
