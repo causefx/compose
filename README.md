@@ -29,7 +29,7 @@ dc images
 dc pull
 ```
 
-`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest already matches the registry, and pulls the ones that differ.
+`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ.
 
 ### Updates
 
@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.6 Pull matches the index or platform digest
 ### 1.7.5 Pull skips images already at the registry digest
 ### 1.7.4 Added repull to re-download repo files
 ### 1.7.3 Non-git update refreshes every repo file

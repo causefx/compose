@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.5
-### ChangeNotes: Pull skips images already at the registry digest.
+VERSION=v1.7.6
+### ChangeNotes: Pull matches the index or platform digest.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -991,24 +991,34 @@ LoadLocalDigests() {
     done < <(docker image ls --digests --no-trunc --format '{{.Repository}}|{{.Tag}}|{{.Digest}}' 2>/dev/null || true)
 }
 
-RemoteManifestDigest() {
+ParseRemoteDigestLines() {
+    local line digest
+    local -A seen=()
+    while IFS= read -r line; do
+        digest=""
+        if [[ "$line" =~ ^[[:space:]]*Digest:[[:space:]]*(sha256:[a-f0-9]{64}) ]]; then
+            digest="${BASH_REMATCH[1]}"
+        elif [[ "$line" =~ @sha256:([a-f0-9]{64}) ]]; then
+            digest="sha256:${BASH_REMATCH[1]}"
+        fi
+        if [[ -n "$digest" && -z "${seen[$digest]:-}" ]]; then
+            seen["$digest"]=1
+            printf '%s\n' "$digest"
+        fi
+    done
+}
+
+RemoteManifestDigests() {
     local ref="$1"
-    local out digest
+    local out parsed=""
     if out="$(docker buildx imagetools inspect "$ref" 2>/dev/null)"; then
-        digest="$(printf '%s\n' "$out" | sed -n 's/^Digest:[[:space:]]*//p' | head -n 1)"
-        if [[ "$digest" == sha256:* ]]; then
-            printf '%s' "$digest"
-            return 0
-        fi
+        parsed="$(printf '%s\n' "$out" | ParseRemoteDigestLines)"
     fi
-    if out="$(docker manifest inspect --verbose "$ref" 2>/dev/null)"; then
-        digest="$(printf '%s\n' "$out" | grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)"
-        if [[ -n "$digest" ]]; then
-            printf '%s' "$digest"
-            return 0
-        fi
+    if [[ -z "$parsed" ]] && out="$(docker manifest inspect --verbose "$ref" 2>/dev/null)"; then
+        parsed="$(printf '%s\n' "$out" | ParseRemoteDigestLines)"
     fi
-    return 1
+    [[ -n "$parsed" ]] || return 1
+    printf '%s\n' "$parsed"
 }
 
 ImageNeedsPull() {
@@ -1027,8 +1037,11 @@ ImageNeedsPull() {
     if [[ -z "$digest" ]]; then
         return 0
     fi
-    remote="$(RemoteManifestDigest "$ref")" || return 0
-    [[ "$remote" == "$digest" ]] && return 1
+    local remotes
+    remotes="$(RemoteManifestDigests "$ref")" || return 0
+    while IFS= read -r remote; do
+        [[ -n "$remote" && "$remote" == "$digest" ]] && return 1
+    done <<< "$remotes"
     return 0
 }
 
