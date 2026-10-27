@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.14
-### ChangeNotes: ps lists every container from docker ps.
+VERSION=v1.7.15
+### ChangeNotes: update downloads once and repull does not loop.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -52,7 +52,12 @@ Say() {
 
 Ask() {
     local reply
-    read -r -p "$(printf "  %b?%b  %s " "$c_teal" "$c_reset" "$1")" reply
+    printf "  %b?%b  %s " "$c_teal" "$c_reset" "$1" >&2
+    if [[ -r /dev/tty ]]; then
+        IFS= read -r reply </dev/tty || reply=""
+    else
+        IFS= read -r reply || reply=""
+    fi
     printf '%s' "$reply"
 }
 
@@ -321,11 +326,11 @@ CheckAction() {
             version)
                 Banner "version"
                 Say ok "$VERSION"
-                CheckVersion
+                CheckVersion ask
                 ;;
             update)
                 Banner "update"
-                CheckVersion "silent"
+                CheckVersion apply
                 ;;
             repull)
                 Banner "repull"
@@ -349,31 +354,32 @@ CheckAction() {
 }
 
 CheckVersion() {
-    local silent="$1"  # Accept an optional parameter
+    local mode="$1"
+    local answer
 
-    LATEST_RELEASE="$(curl -s -r 0-50 "$GITHUB_RAWURL" | sed -n "/VERSION/s/VERSION=//p" | tr -d '"')"
-    LATEST_CHANGES="$(curl -s -r 0-200 "$GITHUB_RAWURL" | sed -n "/ChangeNotes/s/### ChangeNotes: //p")"
+    LATEST_RELEASE="$(curl -fsS -r 0-50 "$GITHUB_RAWURL" | sed -n "/VERSION/s/VERSION=//p" | tr -d '"\r')"
+    LATEST_CHANGES="$(curl -fsS -r 0-200 "$GITHUB_RAWURL" | sed -n "/ChangeNotes/s/### ChangeNotes: //p" | tr -d '\r')"
 
-    ### Check if LATEST_RELEASE is empty and skip if so
     if [[ -z "$LATEST_RELEASE" ]]; then
-        if [[ "$silent" ]]; then
-            Say warn "Could not check for updates."
+        Say warn "Could not check for updates."
+        return 1
+    fi
+
+    if [[ "$VERSION" == "$LATEST_RELEASE" ]]; then
+        if [[ "$mode" == "apply" ]]; then
+            Say ok "Already up to date."
         fi
+        return 0
+    fi
+
+    Say warn "New version available: $VERSION → $LATEST_RELEASE"
+    [[ -n "$LATEST_CHANGES" ]] && Say info "Change notes: $LATEST_CHANGES"
+    if [[ "$mode" == "apply" ]]; then
+        Update
         return
     fi
-
-    ### Version check & initiate self update
-    if [[ "$VERSION" != "$LATEST_RELEASE" ]] ; then
-        Say warn "New version available: $VERSION → $LATEST_RELEASE"
-        Say info "Change notes: $LATEST_CHANGES"
-        if [[ -z "$AutoUp" ]] ; then
-            SelfUpdate="$(Ask "Would you like to update? [y/N]")"
-            [[ "$SelfUpdate" =~ [yY] ]] && Update
-        fi
-    elif [[ "$silent" ]]; then
-        # Print "Already up-to-date" message only if `silent` is set
-        Say ok "Already up to date."
-    fi
+    answer="$(Ask "Would you like to update? [y/N]")"
+    [[ "$answer" =~ ^[yY] ]] && Update
 }
 
 DownloadFile() {
@@ -387,6 +393,21 @@ DownloadFile() {
     return $?
   fi
   return 127
+}
+
+RelaunchUpdated() {
+  local -a args=("-a" "version")
+  local i n
+  n=${#SCRIPT_ARGS[@]}
+  i=0
+  while [[ "$i" -lt "$n" ]]; do
+    if [[ "${SCRIPT_ARGS[$i]}" == "-e" && $((i + 1)) -lt "$n" ]]; then
+      args+=("-e" "${SCRIPT_ARGS[$((i + 1))]}")
+    fi
+    i=$((i + 1))
+  done
+  exec "$SCRIPT_PATH" "${args[@]}"
+  exit 1
 }
 
 UpdateCurl() {
@@ -406,6 +427,8 @@ UpdateCurl() {
     Say bad "curl/wget not available. Download the update manually: $GITHUB"
     return
   fi
+
+  Say info "Downloading the update."
 
   for name in "${repo_files[@]}"; do
     tmp="$(mktemp)" || { [[ ${#tmps[@]} -gt 0 ]] && rm -f "${tmps[@]}"; return; }
@@ -444,24 +467,31 @@ UpdateCurl() {
 
   chmod +x "$SCRIPT_PATH"
   rm -f "${tmps[@]}"
-  Say ok "Starting over with the updated version."
-  exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
-  exit 1 # exit the old instance
+  Say ok "Updated."
+  RelaunchUpdated
 }
 
 Update() {
-  cd "$SCRIPT_WORKING_DIR" || { Say bad "Path error, skipping update." ; return ; }
-  if [[ -n "$(builtin type -P git)" ]] && [[ "$(git ls-remote --get-url 2>/dev/null)" =~ .*"causefx/compose".* ]] ; then
-    Say info "Pulling the latest version."
-    git pull --force || { Say bad "Git error, manually pull/clone." ; return ; }
-    Say ok "Starting over with the updated version."
-    cd - || { Say bad "Path error." ; return ; }
-    exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
-    exit 1 # exit the old instance
-  else
-    cd - || { Say bad "Path error." ; return ; }
-    UpdateCurl
+  local repo_url="" before="" after=""
+  if [[ -n "$(builtin type -P git)" ]]; then
+    repo_url="$(git -C "$SCRIPT_WORKING_DIR" remote get-url origin 2>/dev/null || true)"
   fi
+  if [[ "$repo_url" == *causefx/compose* ]]; then
+    Say info "Pulling the latest version."
+    before="$(git -C "$SCRIPT_WORKING_DIR" rev-parse HEAD 2>/dev/null || true)"
+    if ! git -C "$SCRIPT_WORKING_DIR" pull --force; then
+      Say bad "Git error, manually pull/clone."
+      return
+    fi
+    after="$(git -C "$SCRIPT_WORKING_DIR" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "$before" && "$before" == "$after" ]]; then
+      Say ok "Already on the latest version."
+      return 0
+    fi
+    Say ok "Updated."
+    RelaunchUpdated
+  fi
+  UpdateCurl
 }
 
 List() {

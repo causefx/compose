@@ -38,7 +38,7 @@ dc update
 dc repull
 ```
 
-`dc update` checks the published version and downloads when it differs. `dc repull` downloads again even when the version already matches.
+`dc version` asks before it installs a newer release. `dc update` downloads when the published version differs. `dc repull` pulls again even when the version already matches, then stops.
 
 Without git, both commands download `compose.sh`, `dc.bash`, `docker-compose.yml`, `README.md`, `.env.example`, `.gitignore`, and `LICENSE`. Your `.env` stays as it is. On a git checkout of this repo, they pull the repo and update those files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
 
@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.15 update downloads once and repull does not loop
 ### 1.7.14 ps lists every container from docker ps
 ### 1.7.13 Clearer banner, image rows, and ps table
 ### 1.7.12 One action list drives help and completion
