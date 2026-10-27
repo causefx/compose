@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.8
-### ChangeNotes: Pull reads RepoDigests when the list digest is blank.
+VERSION=v1.7.9
+### ChangeNotes: Status marks on list, images, pull, and prompts.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -28,47 +28,78 @@ Banner() {
     printf "%b── %s ──%b\n" "$c_teal" "$*" "$c_reset"
 }
 
+Say() {
+    local kind="$1"
+    shift
+    local color="$c_teal" mark="·" stream=1
+    case "$kind" in
+        ok) color="$c_green"; mark="✔" ;;
+        warn) color="$c_yellow"; mark="!" ;;
+        bad) color="$c_red"; mark="✘" ;;
+        baderr) color="$c_red"; mark="✘"; stream=2 ;;
+        info) color="$c_teal"; mark="·" ;;
+    esac
+    printf "  %b%s%b  %s\n" "$color" "$mark" "$c_reset" "$*" >&"$stream"
+}
+
+Ask() {
+    local reply
+    read -r -p "$(printf "  %b?%b  %s " "$c_teal" "$c_reset" "$1")" reply
+    printf '%s' "$reply"
+}
+
+PaintStatus() {
+    local text="$1"
+    local color="$c_dim"
+    local lower
+    lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+        *running*|*healthy*) color="$c_green" ;;
+        *paused*|*restarting*|*created*) color="$c_yellow" ;;
+        *exited*|*stopped*|*dead*) color="$c_red" ;;
+    esac
+    printf '%b%s%b' "$color" "$text" "$c_reset"
+}
+
 ### Help Function:
 Help() {
-  echo "Syntax:     compose.sh [OPTIONS]"     
-  echo "Example:    compose.sh -a list"
-  echo
-  echo "Options:"
-  echo "-h         Print this Help."
-  echo "-a         Action to perform."
-  echo "-f | -s    Folder/Service name."
-  echo "-e         (Optional) ENV full file path. | Default: $SCRIPT_WORKING_DIR/.env"
-  echo "Args after -- are passed through to docker compose."
-  echo "Example:    compose.sh -a logs -s plex -- --tail 100"
-  printf "%s\n" "--- Available Actions ---"
-  printf "%s %15s\n" "Action" "     Description";
-  printf "%s %15s\n" "Help" "       This help menu";
-  printf "%s %15s\n" "Up" "         Create and start containers";
-  printf "%s %15s\n" "Down" "       Stop and remove containers, networks";
-  printf "%s %15s\n" "Start" "      Start service(s)";
-  printf "%s %15s\n" "Stop" "       Stop service(s)";
-  printf "%s %15s\n" "Restart" "    Restart service container(s)";
-  printf "%s %15s\n" "Build" "      Build service image(s)";
-  printf "%s %15s\n" "Pause" "      Pause service(s)";
-  printf "%s %15s\n" "Unpause" "    Unpause service(s)";
-  printf "%s %15s\n" "Enable" "     Enable service(s)";
-  printf "%s %15s\n" "Disable" "    Disable service(s)";
-  printf "%s %15s\n" "List" "       List service(s)";
-  printf "%s %15s\n" "Ps" "         Show container(s)";
-  printf "%s %15s\n" "Logs" "       Show service logs";
-  printf "%s %15s\n" "Images" "     List compose images and tags";
-  printf "%s %15s\n" "Pull" "       Pull images; skip ones already current";
-  printf "%s %15s\n" "Config" "     Render compose file(s)";
-  printf "%s %15s\n" "Create" "     Create service";
-  printf "%s %15s\n" "Remove" "     Remove service";
-  printf "%s %15s\n" "Version" "    Display version";
-  printf "%s %15s\n" "Update" "     Update script when a new version exists";
-  printf "%s %15s\n" "Repull" "     Re-download repo files";
-  printf "%s %15s\n" "Ports" "      Show ports from ENV file";
-  printf "%s %15s\n" "Edit" "       Edit service";
-  printf "%s %15s\n" "Env" "        Edit env file";
-  printf "%s %15s\n" "Bashrc" "     Print the dc.bash source line";
-
+  local name desc
+  Banner "help"
+  printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
+  printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
+  printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n\n" "$c_dim" "$c_reset"
+  Banner "actions"
+  while read -r name desc; do
+    [[ -z "$name" ]] && continue
+    printf "  %b%-10s%b  %s\n" "$c_teal" "$name" "$c_reset" "$desc"
+  done <<'EOF'
+help       This help menu
+up         Create and start containers
+down       Stop and remove containers, networks
+start      Start service(s)
+stop       Stop service(s)
+restart    Restart service container(s)
+build      Build service image(s)
+pause      Pause service(s)
+unpause    Unpause service(s)
+enable     Enable service(s)
+disable    Disable service(s)
+list       List service(s)
+ps         Show container(s)
+logs       Show service logs
+images     List compose images and tags
+pull       Pull images and skip ones already current
+config     Render compose file(s)
+create     Create service
+remove     Remove service
+version    Display version
+update     Update script when a new version exists
+repull     Re-download repo files
+ports      Show ports from ENV file
+edit       Edit service
+env        Edit env file
+bashrc     Print the dc.bash source line
+EOF
 }
 
 while getopts "ha:f:s:e:" options; do
@@ -97,7 +128,7 @@ CheckEnv() {
     fi
 
     if [ ! -f "$envFile" ]; then
-        echo -e "\033[31mEnv file does not exist...\033[0m [$envFile]"
+        Say bad "Env file does not exist: $envFile"
         exit
     fi
 
@@ -107,22 +138,22 @@ CheckEnv() {
 
 CheckEnvVariables() {
     if [ -z "$COMPOSE_FILE" ]; then
-        echo -e "\033[31mVariable not set for:\033[0m [COMPOSE_FILE]"
+        Say bad "Variable not set: COMPOSE_FILE"
         exit
     fi
 
     if [ -z "$COMPOSE_FILE_DISABLED" ]; then
-        echo -e "\033[31mVariable not set for:\033[0m [COMPOSE_FILE_DISABLED]"
+        Say bad "Variable not set: COMPOSE_FILE_DISABLED"
         exit
     fi
 
     if [ -z "$STUB_FILE" ]; then
-        echo -e "\033[31mVariable not set for:\033[0m [STUB_FILE]"
+        Say bad "Variable not set: STUB_FILE"
         exit
     fi
 
     if [ -z "$APPS" ]; then
-        echo -e "\033[31mVariable not set for:\033[0m [APPS]"
+        Say bad "Variable not set: APPS"
         exit
     fi
 }
@@ -133,7 +164,7 @@ CheckDockerCompose() {
     elif docker-compose version &> /dev/null || docker-compose -v &> /dev/null; then
         DockerCmd=(docker-compose)
     else
-        printf "%s\n" "No docker binaries available, exiting."
+        Say bad "No docker binaries available, exiting."
         exit 1
     fi
 }
@@ -191,7 +222,7 @@ ReturnStatus() {
 
 CheckFolderSupplied() {
     if [ -z "$1" ]; then
-        echo "Service name not supplied..."
+        Say bad "Service name not supplied."
         exit
     fi
 }
@@ -252,11 +283,11 @@ CheckAction() {
             RunServices "$folder" config "${EXTRA_ARGS[@]}"
             ;;
         enable)
-            echo -e "\033[32mEnabling service\033[0m [$folder]"
+            Say ok "Enabling $folder"
             Toggle enable $folder
             ;;
         disable)
-            echo -e "\033[31mDisabling service\033[0m [$folder]"
+            Say warn "Disabling $folder"
             Toggle disable $folder
             ;;
         list)
@@ -269,21 +300,23 @@ CheckAction() {
             ShowImages pull
             ;;
         create)
-            printf "%s\n" "--- Creating service ---"
+            Banner "create"
             Create $folder
             ;;
         remove)
             Remove $folder
             ;;
         version)
-            printf "%s\n" "--- Version ${VERSION} ---"
+            Banner "version"
+            Say ok "$VERSION"
             CheckVersion
             ;;
         update)
+            Banner "update"
             CheckVersion "silent"
             ;;
         repull)
-            printf "%s\n" "--- Re-downloading repo files ---"
+            Banner "repull"
             Update
             ;;
         ports)
@@ -302,13 +335,13 @@ CheckAction() {
             Help
             ;;
         *)
-            echo "Invalid option. Run compose.sh -h for available actions."
+            Say bad "Invalid option. Run compose.sh -h for available actions."
             Help
             exit
             ;;
     esac
     if [ -z "$action" ]; then
-        echo "Invalid option. Run compose.sh -h for available actions."
+        Say bad "Invalid option. Run compose.sh -h for available actions."
         exit
     fi
 }
@@ -322,21 +355,22 @@ CheckVersion() {
     ### Check if LATEST_RELEASE is empty and skip if so
     if [[ -z "$LATEST_RELEASE" ]]; then
         if [[ "$silent" ]]; then
-            printf "%s\n" "--- Could not check for updates ---"
+            Say warn "Could not check for updates."
         fi
         return
     fi
 
     ### Version check & initiate self update
     if [[ "$VERSION" != "$LATEST_RELEASE" ]] ; then
-        printf "New version available! %b%s%b ⇒ %b%s%b \n Change Notes: %s \n" "$c_yellow" "$VERSION" "$c_reset" "$c_green" "$LATEST_RELEASE" "$c_reset" "$LATEST_CHANGES"
+        Say warn "New version available: $VERSION → $LATEST_RELEASE"
+        Say info "Change notes: $LATEST_CHANGES"
         if [[ -z "$AutoUp" ]] ; then
-            read -r -p "Would you like to update? y/[n]: " SelfUpdate
+            SelfUpdate="$(Ask "Would you like to update? [y/N]")"
             [[ "$SelfUpdate" =~ [yY] ]] && Update
         fi
     elif [[ "$silent" ]]; then
         # Print "Already up-to-date" message only if `silent` is set
-        printf "%s\n" "--- Already up-to-date ---"
+        Say ok "Already up to date."
     fi
 }
 
@@ -367,7 +401,7 @@ UpdateCurl() {
   local name tmp dest i
 
   if [[ -z "$(builtin type -P curl)" && -z "$(builtin type -P wget)" ]]; then
-    printf "curl/wget not available - download the update manually: %s \n" "$GITHUB"
+    Say bad "curl/wget not available. Download the update manually: $GITHUB"
     return
   fi
 
@@ -376,7 +410,7 @@ UpdateCurl() {
     tmps+=("$tmp")
     if ! DownloadFile "$GITHUB_RAW_BASE/$name" "$tmp"; then
       rm -f "${tmps[@]}"
-      printf "Download failed for %s. No files were changed.\n" "$name"
+      Say bad "Download failed for $name. No files were changed."
       return
     fi
   done
@@ -385,7 +419,7 @@ UpdateCurl() {
     dest="$SCRIPT_WORKING_DIR/$name"
     if [[ -f "$dest" ]] && ! cp "$dest" "$dest.bak"; then
       rm -f "${tmps[@]}"
-      printf "Could not back up %s. No files were changed.\n" "$name"
+      Say bad "Could not back up $name. No files were changed."
       return
     fi
   done
@@ -401,51 +435,56 @@ UpdateCurl() {
         fi
       done
       rm -f "${tmps[@]}"
-      printf "Could not install the update.\n"
+      Say bad "Could not install the update."
       return
     fi
   done
 
   chmod +x "$SCRIPT_PATH"
   rm -f "${tmps[@]}"
-  printf "\n%s\n" "--- starting over with the updated version ---"
+  Say ok "Starting over with the updated version."
   exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
   exit 1 # exit the old instance
 }
 
 Update() {
-  cd "$SCRIPT_WORKING_DIR" || { printf "Path error, skipping update.\n" ; return ; }
+  cd "$SCRIPT_WORKING_DIR" || { Say bad "Path error, skipping update." ; return ; }
   if [[ -n "$(builtin type -P git)" ]] && [[ "$(git ls-remote --get-url 2>/dev/null)" =~ .*"causefx/compose".* ]] ; then
-    printf "\n%s\n" "Pulling the latest version."
-    git pull --force || { printf "Git error, manually pull/clone.\n" ; return ; }
-    printf "\n%s\n" "--- starting over with the updated version ---"
-    cd - || { printf "Path error.\n" ; return ; }
+    Say info "Pulling the latest version."
+    git pull --force || { Say bad "Git error, manually pull/clone." ; return ; }
+    Say ok "Starting over with the updated version."
+    cd - || { Say bad "Path error." ; return ; }
     exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
     exit 1 # exit the old instance
   else
-    cd - || { printf "Path error.\n" ; return ; }
+    cd - || { Say bad "Path error." ; return ; }
     UpdateCurl
   fi
 }
 
 List() {
-    local dir path status
-    printf "%25s    %s     %s\n" "Service" "Status" "  Container(s)";
+    local dir path status enabled_count=0 disabled_count=0
+    Banner "list"
+    printf "%b%25s    %-10s  %s%b\n" "$c_dim" "Service" "Compose" "Containers" "$c_reset"
     LoadProjectStatus
     for dir in "$APPS"/*/; do
         [[ -d "$dir" ]] || continue
         path="$(basename "$dir")"
         status="$(ReturnStatus "$path")"
-        if [ -z "$status" ]; then
-            status="No container"
+        if [ -z "$status" ] || [ "$status" = " - " ]; then
+            status="no container"
         fi
         if [ -f "$dir/$COMPOSE_FILE" ]; then
-            printf "%25s    %b%s%b     %s\n" "$path" "$c_green" "Enabled " "$c_reset" "$status";
+            printf "%25s    %b%-10s%b  %s\n" "$path" "$c_green" "enabled" "$c_reset" "$(PaintStatus "$status")"
+            enabled_count=$((enabled_count+1))
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
-            printf "%25s    %b%s%b     %s\n" "$path" "$c_red" "Disabled" "$c_reset" "$status";
+            printf "%25s    %b%-10s%b  %s\n" "$path" "$c_red" "disabled" "$c_reset" "$(PaintStatus "$status")"
+            disabled_count=$((disabled_count+1))
         fi
     done
+    printf "\n"
+    Say info "$enabled_count enabled · $disabled_count disabled"
 }
 
 Toggle() {
@@ -459,13 +498,13 @@ Toggle() {
         if [ -f "$file" ] && [ "${file##*/}" == $fileName ]; then
             if [ $newFileName == $COMPOSE_FILE_DISABLED ]; then
                 if CheckStatus $folder; then
-                    read -p "Service is currently running, do you want to stop and remove it? (y/n) " removeAnswer
+                    removeAnswer="$(Ask "Service is running. Stop and remove it? [y/N]")"
                     if [[ "$removeAnswer" == [yY] ]]; then
-                        echo "Stopping and removing container..."
+                        Say warn "Stopping and removing containers."
                         "${DockerCmd[@]}" --file "$APPS/$folder/$COMPOSE_FILE" --env-file "$envFile" down
-                        echo "Service removed..."
+                        Say ok "Service removed."
                     else
-                        echo "Keeping service..."
+                        Say info "Keeping service."
                     fi
                 fi
             fi
@@ -473,9 +512,11 @@ Toggle() {
         fi
     done
     if [ ! -f "$APPS/$folder/$COMPOSE_FILE" ] && [ ! -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]; then
-        echo "Service does not exist"
+        Say bad "Service does not exist."
+    elif [ "$action" = "enable" ]; then
+        Say ok "Service enabled."
     else
-        echo "Service $action""d"
+        Say warn "Service disabled."
     fi
 }
 
@@ -484,25 +525,25 @@ ServiceDir() {
     local parent target
 
     if [[ -z "$name" || "$name" == *"/"* || "$name" == *".."* || "$name" == "." ]]; then
-        echo "Invalid service name." >&2
+        Say baderr "Invalid service name."
         return 1
     fi
     if [[ ! -d "$APPS" ]]; then
-        echo "APPS directory does not exist..." >&2
+        Say baderr "APPS directory does not exist."
         return 1
     fi
 
     parent="$(cd -P "$APPS" && pwd -P)"
     target="$parent/$name"
     if [[ ! -d "$target" ]]; then
-        echo "Service does not exist..." >&2
+        Say baderr "Service does not exist."
         return 1
     fi
     target="$(cd -P "$target" && pwd -P)"
     case "$target" in
         "$parent"/*) printf '%s\n' "$target" ;;
         *)
-            echo "Refusing to delete a path outside $parent" >&2
+            Say baderr "Refusing to delete a path outside $parent."
             return 1
             ;;
     esac
@@ -516,7 +557,8 @@ Remove() {
     if ! target="$(ServiceDir "$name")"; then
         exit 1
     fi
-    printf "%s\n" "Removing service folder: $target"
+    Banner "remove"
+    Say warn "Removing service folder: $target"
 
     if [[ -f "$APPS/$name/$COMPOSE_FILE" ]]; then
         compose_file="$APPS/$name/$COMPOSE_FILE"
@@ -524,22 +566,22 @@ Remove() {
         compose_file="$APPS/$name/$COMPOSE_FILE_DISABLED"
     fi
     if [[ -n "$compose_file" ]] && CheckStatus "$name"; then
-        echo "Service is running... stopping now..."
+        Say warn "Service is running. Stopping it now."
         "${DockerCmd[@]}" --file "$compose_file" --env-file "$envFile" down
     fi
 
-    read -r -p "Are you sure you want to delete the service folder: $target? (y/n) " removeAnswer
+    removeAnswer="$(Ask "Delete the service folder $target? [y/N]")"
     if [[ "$removeAnswer" == [yY] ]]; then
-        read -r -p "Are you absolutely sure? This cannot be undone (y/n) " removeAnswerConfirm
+        removeAnswerConfirm="$(Ask "This cannot be undone. Delete it? [y/N]")"
         if [[ "$removeAnswerConfirm" == [yY] ]]; then
-            echo "Deleting folder..."
+            Say warn "Deleting folder."
             rm -r -- "$target"
-            echo "Folder deleted..."
+            Say ok "Folder deleted."
         else
-            echo "Keeping folder..."
+            Say info "Keeping folder."
         fi
     else
-        echo "Keeping folder..."
+        Say info "Keeping folder."
     fi
 }
 
@@ -724,9 +766,9 @@ RunServices() {
 
     if [[ -z "$service" || "$service" == "all" ]]; then
         if [[ -z "$service" ]]; then
-            read -r -p "No folder/service was provided - Would you like to loop through all services? ([Y]es/[n]o) " answer
-            if [[ "$answer" != [yY] ]]; then
-                echo "Exiting"
+            answer="$(Ask "No service was provided. Loop through all services? [Y/n]")"
+            if [[ -n "$answer" && "$answer" != [yY] ]]; then
+                Say info "Exiting."
                 return
             fi
         fi
@@ -742,7 +784,7 @@ RunServices() {
             shopt -u nullglob
         fi
         if [[ ${#names[@]} -eq 0 ]]; then
-            echo "No enabled services found."
+            Say warn "No enabled services found."
             return
         fi
         for path in "${names[@]}"; do
@@ -777,7 +819,7 @@ RunServices() {
     fi
 
     if [[ "$service" == *"/"* || "$service" == *".."* || "$service" == "." ]]; then
-        echo "Invalid service name."
+        Say bad "Invalid service name."
         exit 1
     fi
     if [[ -f "$APPS/$service/$COMPOSE_FILE" ]]; then
@@ -786,10 +828,10 @@ RunServices() {
         return
     fi
     if [[ -f "$APPS/$service/$COMPOSE_FILE_DISABLED" ]]; then
-        echo "Service is disabled..."
+        Say warn "Service is disabled."
         exit 1
     fi
-    echo "Service does not exist..."
+    Say bad "Service does not exist."
     exit 1
 }
 
@@ -801,7 +843,7 @@ Logs() {
         esac
     done
     if [[ "$follow" -eq 1 && ( -z "$folder" || "$folder" == "all" ) ]]; then
-        echo "Follow needs a service name."
+        Say bad "Follow needs a service name."
         exit 1
     fi
     RunServices "$folder" logs "${EXTRA_ARGS[@]}"
@@ -816,24 +858,25 @@ EditFile() {
         
         # Only check the folder if $1 is not "env"
         if ! CheckFolderSuppliedNoExit "$1"; then
-            echo -e "\033[31mError: No service name supplied\033[0m"
+            Say bad "No service name supplied."
             exit 1
         fi
     fi
 
     # Check for existence of files
     if [ -f "$file_to_edit" ]; then
-        echo -e "\033[32mUsing primary file: $file_to_edit\033[0m"
+        Say ok "Using $file_to_edit"
     elif [ -f "$backup_file_to_edit" ]; then
-        echo -e "\033[33mPrimary file not found. Using backup file: $backup_file_to_edit\033[0m"
+        Say warn "Primary file not found. Using $backup_file_to_edit"
         file_to_edit="$backup_file_to_edit"
     else
-        echo -e "\033[31mError: Neither primary nor backup file exists\033[0m"
-        echo -e "\033[31mChecked:\n - $file_to_edit\n - $backup_file_to_edit\033[0m"
+        Say bad "Neither primary nor backup file exists."
+        Say info "$file_to_edit"
+        Say info "$backup_file_to_edit"
         exit 1
     fi
-    
-    printf "%s\n" "--- Editing $1 file ---"
+
+    Banner "edit $1"
 
     if ! command -v nano &> /dev/null; then
         vim "$file_to_edit"
@@ -845,38 +888,39 @@ EditFile() {
 
 Create() {
     if ! CheckFolderSuppliedNoExit $1; then
-        read -r -p "What should we name the service: " folder
+        folder="$(Ask "What should we name the service:")"
         folder=$(echo "$folder" | tr '[:upper:]' '[:lower:]')
     fi
     
 
     if [ ! -f "$STUB_FILE" ]; then
-        echo -e "\033[31mError: Stub File does not exist\033[0m [$folder]"
+        Say bad "Stub file does not exist: $STUB_FILE"
         exit
     fi
 
     if [ -d "$APPS/$folder" ]; then
-        echo -e "\033[33mService already exists\033[0m [$folder]"
+        Say warn "Service already exists: $folder"
         exit
     fi
 
-    read -r -p "Enter the container image: " image
+    image="$(Ask "Enter the container image:")"
     if [ -z "$image" ]; then
-        echo "Image not supplied..."
+        Say bad "Image not supplied."
         exit
     fi
 
     mkdir -p "$APPS/$folder"
     cp "$STUB_FILE" "$APPS/$folder/$COMPOSE_FILE_DISABLED"
     sed -i -e "s|{{SERVICE}}|$folder|g" -e "s|{{IMAGE}}|$image|g" "$APPS/$folder/$COMPOSE_FILE_DISABLED"
-    echo -e "\033[32mService created successfully\033[0m [$folder]"
-    echo -e "\033[33mService is disabled - please edit the compose file before enabling\033[0m"
+    Say ok "Service created: $folder"
+    Say warn "Disabled until you edit the compose file."
     
     exit
 }
 
 CheckPorts() {
-    printf "%15s    %s\n" "Service" "Port(s)";
+    Banner "ports"
+    printf "%b%16s    %s%b\n" "$c_dim" "Service" "Port(s)" "$c_reset"
     declare -A ports  # Associative array to store service names and their ports
 
     while IFS='=' read -r key value; do
@@ -895,8 +939,11 @@ CheckPorts() {
 
     # Output the services and their ports
     for name in "${!ports[@]}"; do
-        printf "%15s    %s\n" "${name^^}:" "${ports[$name]}"
+        printf "  %b%-16s%b  %s\n" "$c_teal" "${name^^}" "$c_reset" "${ports[$name]}"
     done
+    if [[ ${#ports[@]} -eq 0 ]]; then
+        Say info "No _PORT_ entries in the env file."
+    fi
 }
 
 
@@ -1150,7 +1197,7 @@ GetFileImages() {
         warn=1
     fi
     if [ "$warn" -eq 1 ]; then
-        echo -e "${c_yellow}Warning:${c_reset} could not resolve every image in $(basename "$(dirname "$file")")/$(basename "$file")" >&2
+        Say warn "Could not resolve every image in $(basename "$(dirname "$file")")/$(basename "$file")"
     fi
 
     if [ ${#refs[@]} -gt 0 ]; then
@@ -1307,7 +1354,7 @@ PrintMissingTags() {
         fi
     done
     if [ "$missing" -gt 0 ]; then
-        printf "%s\n" "${missing} image(s) have no tag and will pull as latest."
+        Say warn "${missing} image(s) have no tag and will pull as latest."
     fi
 }
 
@@ -1327,7 +1374,7 @@ ShowImages() {
     local failed=0
     local index=1
     local total=0
-    local dir path path_lc state file img tag row_key state_color state_label
+    local dir path path_lc state file img tag row_key state_color state_label tag_color
     local answer img_ref include_disabled=0 pull_enabled=0
     local had_nullglob=0
 
@@ -1337,11 +1384,11 @@ ShowImages() {
     shopt -s nullglob
 
     if [ -n "$folder" ] && [ "$folder" != "all" ]; then
-        printf "%s\n" "--- Compose images for ${folder} ---"
+        Banner "images $folder"
     else
-        printf "%s\n" "--- Compose images ---"
+        Banner "images"
     fi
-    printf "%25s  %-8s  %-18s  %s\n" "Service" "Status" "Tag" "Image"
+    printf "%b%25s  %-8s  %-18s  %s%b\n" "$c_dim" "Service" "Status" "Tag" "Image" "$c_reset"
 
     for dir in "$APPS"/*/; do
         [ -d "$dir" ] || continue
@@ -1372,7 +1419,9 @@ ShowImages() {
                 fi
                 seen_row["$row_key"]=1
                 tag="$(ImageTag "$img")"
-                printf "%25s  %b%s%b  %-18s  %s\n" "$path" "$state_color" "$state_label" "$c_reset" "$tag" "$img"
+                tag_color="$c_dim"
+                [[ "$tag" == "-" ]] && tag_color="$c_yellow"
+                printf "%25s  %b%s%b  %b%-18s%b  %s\n" "$path" "$state_color" "$state_label" "$c_reset" "$tag_color" "$tag" "$c_reset" "$img"
                 count=$((count+1))
                 if [ -z "${seen_pull[$img]+x}" ]; then
                     seen_pull["$img"]=1
@@ -1396,7 +1445,7 @@ ShowImages() {
     fi
 
     if [ -n "$folder" ] && [ "$folder" != "all" ] && [ "$found_file" -eq 0 ]; then
-        echo "Service does not exist..."
+        Say bad "Service does not exist."
         exit 1
     fi
 
@@ -1406,9 +1455,10 @@ ShowImages() {
         fi
     done
 
-    printf "\n%s\n" "${count} image(s) listed, ${#pull_refs[@]} unique."
+    printf "\n"
+    Say info "${count} listed · ${#pull_refs[@]} unique."
     if [ ${#disabled_only_refs[@]} -gt 0 ]; then
-        printf "%s\n" "${#disabled_only_refs[@]} image(s) are only used by disabled services."
+        Say warn "${#disabled_only_refs[@]} image(s) are only used by disabled services."
     fi
 
     if [ "$mode" != "pull" ]; then
@@ -1417,7 +1467,7 @@ ShowImages() {
     fi
 
     if [ ${#enabled_refs[@]} -eq 0 ] && [ ${#disabled_only_refs[@]} -eq 0 ]; then
-        echo "No images to pull."
+        Say info "No images to pull."
         return 0
     fi
 
@@ -1425,8 +1475,8 @@ ShowImages() {
         if [ -n "$folder" ]; then
             pull_enabled=1
         else
-            read -r -p "Pull ${#enabled_refs[@]} unique image(s) from enabled services? ([Y]es/[n]o) " answer
-            if [[ "$answer" == [yY] ]]; then
+            answer="$(Ask "Pull ${#enabled_refs[@]} unique image(s) from enabled services? [Y/n]")"
+            if [[ -z "$answer" || "$answer" == [yY] ]]; then
                 pull_enabled=1
             fi
         fi
@@ -1434,9 +1484,9 @@ ShowImages() {
 
     if [ ${#disabled_only_refs[@]} -gt 0 ]; then
         if [ "$pull_enabled" -eq 1 ]; then
-            read -r -p "Also pull ${#disabled_only_refs[@]} image(s) from disabled services? ([y]es/[N]o) " answer
+            answer="$(Ask "Also pull ${#disabled_only_refs[@]} image(s) from disabled services? [y/N]")"
         else
-            read -r -p "Pull ${#disabled_only_refs[@]} image(s) from disabled services? ([y]es/[N]o) " answer
+            answer="$(Ask "Pull ${#disabled_only_refs[@]} image(s) from disabled services? [y/N]")"
         fi
         if [[ "$answer" == [yY] ]]; then
             include_disabled=1
@@ -1453,14 +1503,14 @@ ShowImages() {
     fi
 
     if [ ${#chosen_refs[@]} -eq 0 ]; then
-        echo "No images to pull."
+        Say info "No images to pull."
         return 0
     fi
 
     PrintMissingTags "${chosen_refs[@]}"
 
     if ! command -v docker >/dev/null 2>&1; then
-        echo -e "${c_red}docker is not available, cannot pull images.${c_reset}"
+        Say bad "docker is not available, cannot pull images."
         exit 1
     fi
 
@@ -1470,11 +1520,14 @@ ShowImages() {
     local status_dir current_count stale_count missing_count max_checks=8
     local check_i result_line pull_status
 
-    printf "%s\n" "Checking ${#chosen_refs[@]} image(s) against the registry..."
+    Say info "Checking ${#chosen_refs[@]} image(s) against the registry."
     LoadLocalDigests
     status_dir="$(mktemp -d)"
     check_i=0
     for img_ref in "${chosen_refs[@]}"; do
+        if [[ -t 1 ]]; then
+            printf "\r\033[K  %b·%b  %d/%d" "$c_teal" "$c_reset" "$((check_i+1))" "${#chosen_refs[@]}"
+        fi
         printf '%s\n' "$img_ref" > "$status_dir/$check_i.ref"
         (
             ImageNeedsPull "$img_ref"
@@ -1516,33 +1569,34 @@ ShowImages() {
         check_i=$((check_i+1))
     done
     rm -rf "$status_dir"
+    [[ -t 1 ]] && printf "\r\033[K"
 
-    printf "%s\n" "${current_count} image(s) already match the registry."
+    Say ok "${current_count} image(s) already match the registry."
     if [[ "$missing_count" -gt 0 ]]; then
-        printf "%b%s%b\n" "$c_yellow" "${missing_count} image(s) stay on disk because that tag is no longer on the registry:" "$c_reset"
-        printf '  %s\n' "${missing_refs[@]}"
+        Say warn "${missing_count} image(s) stay on disk because that tag is no longer on the registry:"
+        printf '    %s\n' "${missing_refs[@]}"
     fi
     if [[ "$stale_count" -eq 0 ]]; then
-        echo -e "${c_green}Nothing to pull.${c_reset}"
+        Say ok "Nothing to pull."
         return 0
     fi
 
     total=$stale_count
     index=1
     for img_ref in "${stale_refs[@]}"; do
-        printf "%s\n" "--- Pulling (${index}/${total}) ${img_ref} ---"
+        printf "  %b↓%b  %3d/%-3d  %s\n" "$c_yellow" "$c_reset" "$index" "$total" "$img_ref"
         if ! docker pull "$img_ref"; then
-            echo -e "${c_red}Failed to pull${c_reset} [${img_ref}]"
+            Say bad "Failed to pull $img_ref"
             failed=$((failed+1))
         fi
         index=$((index+1))
     done
 
     if [ "$failed" -gt 0 ]; then
-        echo -e "${c_red}${failed} image(s) failed to pull${c_reset}"
+        Say bad "$failed image(s) failed to pull."
         exit 1
     fi
-    echo -e "${c_green}Pulled ${total} image(s)${c_reset}"
+    Say ok "Pulled ${total} image(s)."
 }
 
 PrintBashrc() {
