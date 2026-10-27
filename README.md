@@ -41,12 +41,13 @@ That downloads a new `compose.sh` and a new `dc.bash`. On a git checkout of this
 
 ## Service stub
 
-`docker-compose.yml` is the template `dc create` copies into a new service folder. `STUB_FILE` in `.env` points at it. `{{SERVICE}}` and `{{IMAGE}}` are replaced with the service name and image.
+`docker-compose.yml` is the template `dc create` copies into a new service folder. `STUB_FILE` in `.env` points at it. `dc create` replaces `{{SERVICE}}` and `{{IMAGE}}` with the service name and image. Those placeholders are quoted in `name`, `container_name`, `hostname`, and `image` so the braces stay intact.
 
-The stub sets `network_mode: bridge`. Comment that line out when the service uses more than one network, or when it should share another container's network.
+The stub sets `network_mode: bridge`. Comment that line out when you add another service that needs to reach this one. Compose then puts both services on the project network, and the second service can reach this one at the hostname `app`. `network_mode: bridge` uses the default Docker bridge instead, which does not provide that name lookup and cannot be combined with a `networks:` list. Also comment it out to use the host network or another container's network.
 
 ## Changes
 
+### 1.7.2 Quoted stub placeholders and bridge network_mode
 ### 1.7.1 Added bashrc action to print the dc.bash source line
 ### 1.7.0 One command runner, logs/ps/config, and update checks only on version and update
 ### 1.6.0 Added images and pull actions, and a sourced dc.bash helper

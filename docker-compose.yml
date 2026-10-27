@@ -1,10 +1,9 @@
-version: ${COMPOSE_VERSION}
-name: { { SERVICE } }
+name: "{{SERVICE}}"
 services:
   app:
-    container_name: { { SERVICE } }
-    hostname: { { SERVICE } }
-    image: { { IMAGE } }
+    container_name: "{{SERVICE}}"
+    hostname: "{{SERVICE}}"
+    image: "{{IMAGE}}"
     restart: unless-stopped
     network_mode: bridge #comment out if using multiple networks or containers
     ports:

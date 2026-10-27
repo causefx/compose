@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.1
-### ChangeNotes: Added bashrc action to print the dc.bash source line.
+VERSION=v1.7.2
+### ChangeNotes: Quoted stub placeholders and bridge network_mode.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 GITHUB_RAW_DC="https://raw.githubusercontent.com/causefx/compose/main/dc.bash"
