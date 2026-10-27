@@ -29,7 +29,7 @@ dc images
 dc pull
 ```
 
-`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ. `dc up all` prints one line per service when its containers are already in that state. Compose's own output stays on screen when a container changes, a command fails, or the service takes more than a few seconds.
+`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ. New actions are added in the `ActionSpec` list in `compose.sh`. Help text and `dc` tab completion both read that list. `dc up all` prints one line per service when its containers are already in that state. Compose's own output stays on screen when a container changes, a command fails, or the service takes more than a few seconds.
 
 ### Updates
 
@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.12 One action list drives help and completion
 ### 1.7.11 Pull lists images that have updates
 ### 1.7.10 Lists group rows and line up columns
 ### 1.7.9 Status marks on list, images, pull, and prompts

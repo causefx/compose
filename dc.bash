@@ -47,7 +47,15 @@ _dc_completions() {
     local cur opts_a opts_s apps dir name
     cur="${COMP_WORDS[COMP_CWORD]}"
 
-    opts_a="help up down start stop restart build pause unpause enable disable list ps logs images pull config create remove version update repull ports edit env bashrc"
+    opts_a="$(awk '
+        /^# @actions$/ {p=1; next}
+        /^# @end$/ {p=0}
+        p && index($0, "|") {
+            split($0, a, "|")
+            printf "%s ", a[1]
+        }
+    ' "$COMPOSE_SH")"
+    opts_a="${opts_a% }"
     apps="$(_dc_apps_dir)"
     opts_s="all"
     for dir in "$apps"/*/; do

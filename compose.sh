@@ -1,12 +1,11 @@
 #!/bin/bash
-VERSION=v1.7.11
-### ChangeNotes: Pull lists images that have updates.
+VERSION=v1.7.12
+### ChangeNotes: One action list drives help and completion.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
 SCRIPT_ARGS=( "$@" )
 SCRIPT_PATH="$(readlink -f "$0")"
-SCRIPT_NAME="$(basename "$SCRIPT_PATH")"
 SCRIPT_WORKING_DIR="$(dirname "$SCRIPT_PATH")"
 
 LATEST_RELEASE=""
@@ -84,45 +83,59 @@ PadRight() {
     fi
 }
 
-### Help Function:
-Help() {
-  local name desc
-  Banner "help"
-  printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
-  printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
-  printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n\n" "$c_dim" "$c_reset"
-  Banner "actions"
-  while read -r name desc; do
-    [[ -z "$name" ]] && continue
-    printf "  %b%-10s%b  %s\n" "$c_teal" "$name" "$c_reset" "$desc"
-  done <<'EOF'
-help       This help menu
-up         Create and start containers
-down       Stop and remove containers, networks
-start      Start service(s)
-stop       Stop service(s)
-restart    Restart service container(s)
-build      Build service image(s)
-pause      Pause service(s)
-unpause    Unpause service(s)
-enable     Enable service(s)
-disable    Disable service(s)
-list       List service(s)
-ps         Show container(s)
-logs       Show service logs
-images     List compose images and tags
-pull       Pull images and skip ones already current
-config     Render compose file(s)
-create     Create service
-remove     Remove service
-version    Display version
-update     Update script when a new version exists
-repull     Re-download repo files
-ports      Show ports from ENV file
-edit       Edit service
-env        Edit env file
-bashrc     Print the dc.bash source line
+# Add an action here. Help, dispatch, and dc tab completion read this list.
+# name|description|handler|compose args
+ActionSpec() {
+    cat <<'EOF'
+# @actions
+up|Create and start containers|compose|up -d
+down|Stop and remove containers, networks|compose|down
+start|Start service(s)|compose|start
+stop|Stop service(s)|compose|stop
+restart|Restart service container(s)|compose|restart
+build|Build service image(s)|compose|build
+pause|Pause service(s)|compose|pause
+unpause|Unpause service(s)|compose|unpause
+enable|Enable service(s)|enable
+disable|Disable service(s)|disable
+list|List service(s)|list
+ps|Show container(s)|compose|ps
+logs|Show service logs|logs
+images|List compose images and tags|images
+pull|Pull images and skip ones already current|pull
+config|Render compose file(s)|compose|config
+create|Create service|create
+remove|Remove service|remove
+version|Display version|version
+update|Update script when a new version exists|update
+repull|Re-download repo files|repull
+ports|Show ports from ENV file|ports
+edit|Edit service|edit
+env|Edit env file|env
+bashrc|Print the dc.bash source line|bashrc
+help|This help menu|help
+# @end
 EOF
+}
+
+EachAction() {
+    local line
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        printf '%s\n' "$line"
+    done < <(ActionSpec)
+}
+
+Help() {
+    local name desc handler args
+    Banner "help"
+    printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
+    printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
+    printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n\n" "$c_dim" "$c_reset"
+    Banner "actions"
+    while IFS='|' read -r name desc handler args; do
+        printf "  %b%-10s%b  %s\n" "$c_teal" "$name" "$c_reset" "$desc"
+    done < <(EachAction)
 }
 
 while getopts "ha:f:s:e:" options; do
@@ -140,8 +153,8 @@ fi
 EXTRA_ARGS=("$@")
 
 LowerCaseArguments() {
-    action=$(echo "$action" | tr '[:upper:]' '[:lower:]')
-    folder=$(echo "$folder" | tr '[:upper:]' '[:lower:]')
+    action="${action,,}"
+    folder="${folder,,}"
 }
 
 
@@ -159,26 +172,28 @@ CheckEnv() {
     source "$envFile"
 }
 
+RequireVar() {
+    local name
+    for name in "$@"; do
+        if [[ -z "${!name}" ]]; then
+            Say bad "Variable not set: $name"
+            exit 1
+        fi
+    done
+}
+
 CheckEnvVariables() {
-    if [ -z "$COMPOSE_FILE" ]; then
-        Say bad "Variable not set: COMPOSE_FILE"
-        exit
-    fi
+    RequireVar COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE APPS
+}
 
-    if [ -z "$COMPOSE_FILE_DISABLED" ]; then
-        Say bad "Variable not set: COMPOSE_FILE_DISABLED"
-        exit
-    fi
-
-    if [ -z "$STUB_FILE" ]; then
-        Say bad "Variable not set: STUB_FILE"
-        exit
-    fi
-
-    if [ -z "$APPS" ]; then
-        Say bad "Variable not set: APPS"
-        exit
-    fi
+ServiceDirs() {
+    local had=0 dir
+    shopt -q nullglob && had=1
+    shopt -s nullglob
+    for dir in "$APPS"/*/; do
+        [[ -d "$dir" ]] && printf '%s\n' "$dir"
+    done
+    [[ "$had" -eq 1 ]] || shopt -u nullglob
 }
 
 CheckDockerCompose() {
@@ -260,113 +275,67 @@ CheckFolderSuppliedNoExit() {
 
 # Action Functions
 CheckAction() {
-    case $action in
-        up)
-            Banner "up"
-            RunServices "$folder" up -d "${EXTRA_ARGS[@]}"
-            ;;
-        down)
-            Banner "down"
-            RunServices "$folder" down "${EXTRA_ARGS[@]}"
-            ;;
-        start)
-            Banner "start"
-            RunServices "$folder" start "${EXTRA_ARGS[@]}"
-            ;;
-        stop)
-            Banner "stop"
-            RunServices "$folder" stop "${EXTRA_ARGS[@]}"
-            ;;
-        restart)
-            Banner "restart"
-            RunServices "$folder" restart "${EXTRA_ARGS[@]}"
-            ;;
-        build)
-            Banner "build"
-            RunServices "$folder" build "${EXTRA_ARGS[@]}"
-            ;;
-        pause)
-            Banner "pause"
-            RunServices "$folder" pause "${EXTRA_ARGS[@]}"
-            ;;
-        unpause)
-            Banner "unpause"
-            RunServices "$folder" unpause "${EXTRA_ARGS[@]}"
-            ;;
-        ps)
-            Banner "ps"
-            RunServices "$folder" ps "${EXTRA_ARGS[@]}"
-            ;;
-        logs)
-            Banner "logs"
-            Logs
-            ;;
-        config)
-            Banner "config"
-            RunServices "$folder" config "${EXTRA_ARGS[@]}"
-            ;;
-        enable)
-            Say ok "Enabling $folder"
-            Toggle enable $folder
-            ;;
-        disable)
-            Say warn "Disabling $folder"
-            Toggle disable $folder
-            ;;
-        list)
-            List
-            ;;
-        images)
-            ShowImages list
-            ;;
-        pull)
-            ShowImages pull
-            ;;
-        create)
-            Banner "create"
-            Create $folder
-            ;;
-        remove)
-            Remove $folder
-            ;;
-        version)
-            Banner "version"
-            Say ok "$VERSION"
-            CheckVersion
-            ;;
-        update)
-            Banner "update"
-            CheckVersion "silent"
-            ;;
-        repull)
-            Banner "repull"
-            Update
-            ;;
-        ports)
-            CheckPorts
-            ;;
-        edit)
-            EditFile $folder
-            ;;
-        env)
-            EditFile env
-            ;;
-        bashrc)
-            PrintBashrc
-            ;;
-        help)
-            Help
-            ;;
-        *)
-            Say bad "Invalid option. Run compose.sh -h for available actions."
-            Help
-            exit
-            ;;
-    esac
-    if [ -z "$action" ]; then
+    local name desc handler args
+    if [[ -z "${action:-}" ]]; then
         Say bad "Invalid option. Run compose.sh -h for available actions."
-        exit
+        exit 1
     fi
+    while IFS='|' read -r name desc handler args; do
+        [[ "$name" == "$action" ]] || continue
+        case "$handler" in
+            compose)
+                Banner "$name"
+                # shellcheck disable=SC2086
+                RunServices "$folder" $args "${EXTRA_ARGS[@]}"
+                ;;
+            logs)
+                Banner "logs"
+                Logs
+                ;;
+            enable)
+                Say ok "Enabling $folder"
+                Toggle enable "$folder"
+                ;;
+            disable)
+                Say warn "Disabling $folder"
+                Toggle disable "$folder"
+                ;;
+            list) List ;;
+            images) ShowImages list ;;
+            pull) ShowImages pull ;;
+            create)
+                Banner "create"
+                Create "$folder"
+                ;;
+            remove) Remove "$folder" ;;
+            version)
+                Banner "version"
+                Say ok "$VERSION"
+                CheckVersion
+                ;;
+            update)
+                Banner "update"
+                CheckVersion "silent"
+                ;;
+            repull)
+                Banner "repull"
+                Update
+                ;;
+            ports) CheckPorts ;;
+            edit) EditFile "$folder" ;;
+            env) EditFile env ;;
+            bashrc) PrintBashrc ;;
+            help) Help ;;
+            *)
+                Say bad "Unknown handler: $handler"
+                exit 1
+                ;;
+        esac
+        return 0
+    done < <(EachAction)
+    Say bad "Invalid option. Run compose.sh -h for available actions."
+    Help
+    exit 1
 }
 
 CheckVersion() {
@@ -490,8 +459,7 @@ List() {
     local -a row_name=() row_mark=() row_color=() row_status=()
     Banner "list"
     LoadProjectStatus
-    for dir in "$APPS"/*/; do
-        [[ -d "$dir" ]] || continue
+    while IFS= read -r dir; do
         path="$(basename "$dir")"
         status="$(ReturnStatus "$path")"
         if [ -z "$status" ] || [ "$status" = " - " ]; then
@@ -511,7 +479,7 @@ List() {
             row_status+=("$status")
             disabled_count=$((disabled_count+1))
         fi
-    done
+    done < <(ServiceDirs)
     if [[ ${#row_name[@]} -eq 0 ]]; then
         Say info "No services."
         return
@@ -530,9 +498,10 @@ List() {
 }
 
 Toggle() {
-    action=$1
-    folder=$2
-    CheckFolderSupplied $2
+    local action="$1"
+    local folder="$2"
+    local file fileName newFileName removeAnswer
+    CheckFolderSupplied "$folder"
     fileName=$( [ "$action" == "enable" ] && echo "$COMPOSE_FILE_DISABLED" || echo "$COMPOSE_FILE" )
     newFileName=$( [ "$action" == "enable" ] && echo "$COMPOSE_FILE" || echo "$COMPOSE_FILE_DISABLED" )
 
@@ -800,7 +769,7 @@ RunServices() {
     shift
     local verb="${1:-}"
     local pretty=0
-    local dir path failed=0 ran=0 had_nullglob=0
+    local dir path failed=0 ran=0
     local -a names=()
     local index=0 unchanged=0 changed=0 failed_color name_width=16
     case "$verb" in
@@ -815,17 +784,10 @@ RunServices() {
                 return
             fi
         fi
-        if shopt -q nullglob; then
-            had_nullglob=1
-        fi
-        shopt -s nullglob
-        for dir in "$APPS"/*/; do
+        while IFS= read -r dir; do
             [[ -f "${dir}${COMPOSE_FILE}" ]] || continue
             names+=("$(basename "$dir")")
-        done
-        if [[ "$had_nullglob" -eq 0 ]]; then
-            shopt -u nullglob
-        fi
+        done < <(ServiceDirs)
         if [[ ${#names[@]} -eq 0 ]]; then
             Say warn "No enabled services found."
             return
@@ -932,9 +894,9 @@ EditFile() {
 
 
 Create() {
-    if ! CheckFolderSuppliedNoExit $1; then
+    if ! CheckFolderSuppliedNoExit "$1"; then
         folder="$(Ask "What should we name the service:")"
-        folder=$(echo "$folder" | tr '[:upper:]' '[:lower:]')
+        folder="${folder,,}"
     fi
     
 
@@ -1425,12 +1387,6 @@ ShowImages() {
     local -a disp_path=() disp_state=() disp_tag=() disp_img=()
     local prev="" mark color tag_color tag_width i
     local answer img_ref include_disabled=0 pull_enabled=0
-    local had_nullglob=0
-
-    if shopt -q nullglob; then
-        had_nullglob=1
-    fi
-    shopt -s nullglob
 
     if [ -n "$folder" ] && [ "$folder" != "all" ]; then
         Banner "images $folder"
@@ -1438,10 +1394,9 @@ ShowImages() {
         Banner "images"
     fi
 
-    for dir in "$APPS"/*/; do
-        [ -d "$dir" ] || continue
+    while IFS= read -r dir; do
         path="$(basename "$dir")"
-        path_lc="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+        path_lc="${path,,}"
         if [ -n "$folder" ] && [ "$folder" != "all" ] && [ "$path_lc" != "$folder" ]; then
             continue
         fi
@@ -1483,11 +1438,7 @@ ShowImages() {
                 fi
             done < <(GetFileImages "$file")
         done
-    done
-
-    if [ "$had_nullglob" -eq 0 ]; then
-        shopt -u nullglob
-    fi
+    done < <(ServiceDirs)
 
     if [ -n "$folder" ] && [ "$folder" != "all" ] && [ "$found_file" -eq 0 ]; then
         Say bad "Service does not exist."
