@@ -37,7 +37,7 @@ dc pull
 dc update
 ```
 
-That downloads a new `compose.sh` and a new `dc.bash`. On a git checkout of this repo, the same command pulls the repo and updates both files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
+Without git, that downloads `compose.sh`, `dc.bash`, `docker-compose.yml`, `README.md`, `.env.example`, `.gitignore`, and `LICENSE`. Your `.env` stays as it is. On a git checkout of this repo, the same command pulls the repo and updates those files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
 
 ## Service stub
 
@@ -47,6 +47,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.3 Non-git update refreshes every repo file
 ### 1.7.2 Quoted stub placeholders and bridge network_mode
 ### 1.7.1 Added bashrc action to print the dc.bash source line
 ### 1.7.0 One command runner, logs/ps/config, and update checks only on version and update

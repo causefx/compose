@@ -6,4 +6,6 @@
 !compose.sh
 !dc.bash
 !README.md
+!docker-compose.yml
 !.env.example
+!LICENSE

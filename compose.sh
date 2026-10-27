@@ -1,9 +1,9 @@
 #!/bin/bash
-VERSION=v1.7.2
-### ChangeNotes: Quoted stub placeholders and bridge network_mode.
+VERSION=v1.7.3
+### ChangeNotes: Non-git update refreshes every repo file.
 GITHUB="https://github.com/causefx/compose"
-GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
-GITHUB_RAW_DC="https://raw.githubusercontent.com/causefx/compose/main/dc.bash"
+GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
+GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
 SCRIPT_ARGS=( "$@" )
 SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_NAME="$(basename "$SCRIPT_PATH")"
@@ -344,40 +344,60 @@ DownloadFile() {
 }
 
 UpdateCurl() {
-  local tmp_script tmp_dc dc_path
-  dc_path="$SCRIPT_WORKING_DIR/dc.bash"
+  local -a repo_files=(
+    compose.sh
+    dc.bash
+    README.md
+    docker-compose.yml
+    .env.example
+    .gitignore
+    LICENSE
+  )
+  local -a tmps=()
+  local name tmp dest i
 
   if [[ -z "$(builtin type -P curl)" && -z "$(builtin type -P wget)" ]]; then
     printf "curl/wget not available - download the update manually: %s \n" "$GITHUB"
     return
   fi
 
-  tmp_script="$(mktemp)" || return
-  tmp_dc="$(mktemp)" || { rm -f "$tmp_script"; return; }
-
-  if ! DownloadFile "$GITHUB_RAWURL" "$tmp_script" || ! DownloadFile "$GITHUB_RAW_DC" "$tmp_dc"; then
-    rm -f "$tmp_script" "$tmp_dc"
-    printf "Download failed. Script was not changed.\n"
-    return
-  fi
-
-  cp "$SCRIPT_PATH" "$SCRIPT_PATH".bak
-  if [[ -f "$dc_path" ]]; then
-    cp "$dc_path" "$dc_path".bak
-  fi
-
-  if ! cp "$tmp_script" "$SCRIPT_PATH" || ! cp "$tmp_dc" "$dc_path"; then
-    cp "$SCRIPT_PATH".bak "$SCRIPT_PATH"
-    if [[ -f "$dc_path".bak ]]; then
-      cp "$dc_path".bak "$dc_path"
+  for name in "${repo_files[@]}"; do
+    tmp="$(mktemp)" || { [[ ${#tmps[@]} -gt 0 ]] && rm -f "${tmps[@]}"; return; }
+    tmps+=("$tmp")
+    if ! DownloadFile "$GITHUB_RAW_BASE/$name" "$tmp"; then
+      rm -f "${tmps[@]}"
+      printf "Download failed for %s. No files were changed.\n" "$name"
+      return
     fi
-    rm -f "$tmp_script" "$tmp_dc"
-    printf "Could not install the update.\n"
-    return
-  fi
+  done
+
+  for name in "${repo_files[@]}"; do
+    dest="$SCRIPT_WORKING_DIR/$name"
+    if [[ -f "$dest" ]] && ! cp "$dest" "$dest.bak"; then
+      rm -f "${tmps[@]}"
+      printf "Could not back up %s. No files were changed.\n" "$name"
+      return
+    fi
+  done
+
+  for i in "${!repo_files[@]}"; do
+    name="${repo_files[$i]}"
+    dest="$SCRIPT_WORKING_DIR/$name"
+    if ! cp "${tmps[$i]}" "$dest"; then
+      for name in "${repo_files[@]}"; do
+        dest="$SCRIPT_WORKING_DIR/$name"
+        if [[ -f "$dest.bak" ]]; then
+          cp "$dest.bak" "$dest"
+        fi
+      done
+      rm -f "${tmps[@]}"
+      printf "Could not install the update.\n"
+      return
+    fi
+  done
 
   chmod +x "$SCRIPT_PATH"
-  rm -f "$tmp_script" "$tmp_dc"
+  rm -f "${tmps[@]}"
   printf "\n%s\n" "--- starting over with the updated version ---"
   exec "$SCRIPT_PATH" "${SCRIPT_ARGS[@]}" # run the new script with old arguments
   exit 1 # exit the old instance
