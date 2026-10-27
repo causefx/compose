@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.9
-### ChangeNotes: Status marks on list, images, pull, and prompts.
+VERSION=v1.7.10
+### ChangeNotes: Lists group rows and line up columns.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -59,6 +59,29 @@ PaintStatus() {
         *exited*|*stopped*|*dead*) color="$c_red" ;;
     esac
     printf '%b%s%b' "$color" "$text" "$c_reset"
+}
+
+ColumnWidth() {
+    local max="$1"
+    shift
+    local item
+    for item in "$@"; do
+        if (( ${#item} > max )); then
+            max=${#item}
+        fi
+    done
+    printf '%s' "$max"
+}
+
+PadRight() {
+    local text="$1"
+    local width="$2"
+    local gap=$(( width - ${#text} ))
+    if (( gap > 0 )); then
+        printf '%s%*s' "$text" "$gap" ""
+    else
+        printf '%s' "$text"
+    fi
 }
 
 ### Help Function:
@@ -463,9 +486,9 @@ Update() {
 }
 
 List() {
-    local dir path status enabled_count=0 disabled_count=0
+    local dir path status width enabled_count=0 disabled_count=0 i
+    local -a row_name=() row_mark=() row_color=() row_status=()
     Banner "list"
-    printf "%b%25s    %-10s  %s%b\n" "$c_dim" "Service" "Compose" "Containers" "$c_reset"
     LoadProjectStatus
     for dir in "$APPS"/*/; do
         [[ -d "$dir" ]] || continue
@@ -475,13 +498,32 @@ List() {
             status="no container"
         fi
         if [ -f "$dir/$COMPOSE_FILE" ]; then
-            printf "%25s    %b%-10s%b  %s\n" "$path" "$c_green" "enabled" "$c_reset" "$(PaintStatus "$status")"
+            row_name+=("$path")
+            row_mark+=("✔")
+            row_color+=("$c_green")
+            row_status+=("$status")
             enabled_count=$((enabled_count+1))
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
-            printf "%25s    %b%-10s%b  %s\n" "$path" "$c_red" "disabled" "$c_reset" "$(PaintStatus "$status")"
+            row_name+=("$path")
+            row_mark+=("✘")
+            row_color+=("$c_red")
+            row_status+=("$status")
             disabled_count=$((disabled_count+1))
         fi
+    done
+    if [[ ${#row_name[@]} -eq 0 ]]; then
+        Say info "No services."
+        return
+    fi
+    width="$(ColumnWidth 7 "${row_name[@]}")"
+    printf "%b     %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "containers" "$c_reset"
+    for i in "${!row_name[@]}"; do
+        printf "  %b%s%b  %s  %b│%b  %s\n" \
+            "${row_color[$i]}" "${row_mark[$i]}" "$c_reset" \
+            "$(PadRight "${row_name[$i]}" "$width")" \
+            "$c_dim" "$c_reset" \
+            "$(PaintStatus "${row_status[$i]}")"
     done
     printf "\n"
     Say info "$enabled_count enabled · $disabled_count disabled"
@@ -738,8 +780,9 @@ RunComposeBrief() {
     if [[ "$shown_live" -eq 0 ]] && ComposeOutputSteady "$verb" "$outfile"; then
         BRIEF_KIND=steady
         label="$(ComposeSteadyLabel "$verb" "$outfile")"
-        printf "  %b✔%b  %b%3d/%-3d%b  %-24s %b%s%b\n" \
-            "$c_green" "$c_reset" "$c_dim" "$index" "$total" "$c_reset" "$name" "$c_dim" "$label" "$c_reset"
+        printf "  %b✔%b  %b%3d/%-3d%b  %-${ROW_NAME_WIDTH:-16}s  %b│%b  %b%s%b\n" \
+            "$c_green" "$c_reset" "$c_dim" "$index" "$total" "$c_reset" "$name" \
+            "$c_dim" "$c_reset" "$c_dim" "$label" "$c_reset"
         rm -f "$outfile"
         return 0
     fi
@@ -759,7 +802,7 @@ RunServices() {
     local pretty=0
     local dir path failed=0 ran=0 had_nullglob=0
     local -a names=()
-    local index=0 unchanged=0 changed=0 failed_color
+    local index=0 unchanged=0 changed=0 failed_color name_width=16
     case "$verb" in
         up|start|stop|restart|pause|unpause|down) pretty=1 ;;
     esac
@@ -787,6 +830,8 @@ RunServices() {
             Say warn "No enabled services found."
             return
         fi
+        name_width="$(ColumnWidth 16 "${names[@]}")"
+        ROW_NAME_WIDTH="$name_width"
         for path in "${names[@]}"; do
             index=$((index+1))
             ran=1
@@ -919,31 +964,33 @@ Create() {
 }
 
 CheckPorts() {
+    local key value name width
+    local -a names=()
+    declare -A ports
     Banner "ports"
-    printf "%b%16s    %s%b\n" "$c_dim" "Service" "Port(s)" "$c_reset"
-    declare -A ports  # Associative array to store service names and their ports
 
     while IFS='=' read -r key value; do
-        # Check if the line contains `_PORT_` and is not a comment
         if [[ $key == *_PORT_* && ! $key =~ ^# ]]; then
-            # Extract the part before `_PORT_` and capitalize it
             name="${key%%_PORT_*}"
-            # Append the port if the service name already exists, otherwise create new entry
-            if [[ -n "${ports[$name]}" ]]; then
-                ports[$name]+=" | $value"
+            name="${name^^}"
+            if [[ -n "${ports[$name]:-}" ]]; then
+                ports[$name]+="  ${value}"
             else
                 ports[$name]="$value"
+                names+=("$name")
             fi
         fi
     done < "$envFile"
 
-    # Output the services and their ports
-    for name in "${!ports[@]}"; do
-        printf "  %b%-16s%b  %s\n" "$c_teal" "${name^^}" "$c_reset" "${ports[$name]}"
-    done
-    if [[ ${#ports[@]} -eq 0 ]]; then
+    if [[ ${#names[@]} -eq 0 ]]; then
         Say info "No _PORT_ entries in the env file."
+        return
     fi
+    width="$(ColumnWidth 7 "${names[@]}")"
+    printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "ports" "$c_reset"
+    while IFS= read -r name; do
+        printf "  %b%s%b  %b│%b  %s\n" "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" "$c_dim" "$c_reset" "${ports[$name]}"
+    done < <(printf '%s\n' "${names[@]}" | sort)
 }
 
 
@@ -1374,7 +1421,9 @@ ShowImages() {
     local failed=0
     local index=1
     local total=0
-    local dir path path_lc state file img tag row_key state_color state_label tag_color
+    local dir path path_lc state file img tag row_key
+    local -a disp_path=() disp_state=() disp_tag=() disp_img=()
+    local prev="" mark color tag_color tag_width i
     local answer img_ref include_disabled=0 pull_enabled=0
     local had_nullglob=0
 
@@ -1388,7 +1437,6 @@ ShowImages() {
     else
         Banner "images"
     fi
-    printf "%b%25s  %-8s  %-18s  %s%b\n" "$c_dim" "Service" "Status" "Tag" "Image" "$c_reset"
 
     for dir in "$APPS"/*/; do
         [ -d "$dir" ] || continue
@@ -1401,12 +1449,8 @@ ShowImages() {
         for state in Enabled Disabled; do
             if [ "$state" = "Enabled" ]; then
                 file="${dir}${COMPOSE_FILE}"
-                state_color="$c_green"
-                state_label="Enabled "
             else
                 file="${dir}${COMPOSE_FILE_DISABLED}"
-                state_color="$c_red"
-                state_label="Disabled"
             fi
             [ -f "$file" ] || continue
             found_file=1
@@ -1419,9 +1463,10 @@ ShowImages() {
                 fi
                 seen_row["$row_key"]=1
                 tag="$(ImageTag "$img")"
-                tag_color="$c_dim"
-                [[ "$tag" == "-" ]] && tag_color="$c_yellow"
-                printf "%25s  %b%s%b  %b%-18s%b  %s\n" "$path" "$state_color" "$state_label" "$c_reset" "$tag_color" "$tag" "$c_reset" "$img"
+                disp_path+=("$path")
+                disp_state+=("$state")
+                disp_tag+=("$tag")
+                disp_img+=("$img")
                 count=$((count+1))
                 if [ -z "${seen_pull[$img]+x}" ]; then
                     seen_pull["$img"]=1
@@ -1454,6 +1499,29 @@ ShowImages() {
             disabled_only_refs+=("$img_ref")
         fi
     done
+
+    if [[ "$count" -gt 0 ]]; then
+        tag_width="$(ColumnWidth 3 "${disp_tag[@]}")"
+        printf "%b      %s  │  %s%b\n" "$c_dim" "$(PadRight "tag" "$tag_width")" "image" "$c_reset"
+        for i in "${!disp_path[@]}"; do
+            if [[ "$prev" != "${disp_path[$i]}|${disp_state[$i]}" ]]; then
+                if [[ "${disp_state[$i]}" == "Enabled" ]]; then
+                    mark="✔"
+                    color="$c_green"
+                else
+                    mark="✘"
+                    color="$c_red"
+                fi
+                printf "  %b%s%b  %s\n" "$color" "$mark" "$c_reset" "${disp_path[$i]}"
+                prev="${disp_path[$i]}|${disp_state[$i]}"
+            fi
+            tag_color="$c_dim"
+            [[ "${disp_tag[$i]}" == "-" ]] && tag_color="$c_yellow"
+            printf "      %b%s%b  %b│%b  %s\n" \
+                "$tag_color" "$(PadRight "${disp_tag[$i]}" "$tag_width")" "$c_reset" \
+                "$c_dim" "$c_reset" "${disp_img[$i]}"
+        done
+    fi
 
     printf "\n"
     Say info "${count} listed · ${#pull_refs[@]} unique."
