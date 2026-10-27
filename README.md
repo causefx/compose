@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.11 Pull lists images that have updates
 ### 1.7.10 Lists group rows and line up columns
 ### 1.7.9 Status marks on list, images, pull, and prompts
 ### 1.7.8 Pull reads RepoDigests when the list digest is blank

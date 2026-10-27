@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.10
-### ChangeNotes: Lists group rows and line up columns.
+VERSION=v1.7.11
+### ChangeNotes: Pull lists images that have updates.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1648,6 +1648,8 @@ ShowImages() {
         Say ok "Nothing to pull."
         return 0
     fi
+    Say warn "${stale_count} image(s) have updates:"
+    printf '    %s\n' "${stale_refs[@]}"
 
     total=$stale_count
     index=1
