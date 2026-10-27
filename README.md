@@ -39,6 +39,12 @@ dc update
 
 That downloads a new `compose.sh` and a new `dc.bash`. On a git checkout of this repo, the same command pulls the repo and updates both files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
 
+## Service stub
+
+`docker-compose.yml` is the template `dc create` copies into a new service folder. `STUB_FILE` in `.env` points at it. `{{SERVICE}}` and `{{IMAGE}}` are replaced with the service name and image.
+
+The stub sets `network_mode: bridge`. Comment that line out when the service uses more than one network, or when it should share another container's network.
+
 ## Changes
 
 ### 1.7.1 Added bashrc action to print the dc.bash source line

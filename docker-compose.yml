@@ -1,22 +1,23 @@
 version: ${COMPOSE_VERSION}
-name: {{SERVICE}}
+name: { { SERVICE } }
 services:
-    app:
-        container_name: {{SERVICE}}
-        hostname: {{SERVICE}}
-        image: {{IMAGE}}
-        restart: unless-stopped
-        ports:
-            - ${CHANGE_ME_PORT_80}:80
-        volumes:
-            - ${APPS}/{{SERVICE}}:/{{CHANGE-ME}}
-            - ${TIME}
-        environment:
-            - PUID=${PUID}
-            - PGID=${PGID}
-            - TZ=${TZ}
-        logging:
-            driver: json-file
-            options:
-                max-file: ${DOCKERLOGGING_MAXFILE}
-                max-size: ${DOCKERLOGGING_MAXSIZE}
+  app:
+    container_name: { { SERVICE } }
+    hostname: { { SERVICE } }
+    image: { { IMAGE } }
+    restart: unless-stopped
+    network_mode: bridge #comment out if using multiple networks or containers
+    ports:
+      - ${CHANGE_ME_PORT_80}:80
+    volumes:
+      - ${APPS}/{{SERVICE}}:/{{CHANGE-ME}}
+      - ${TIME}
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
