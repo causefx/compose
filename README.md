@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.14 ps lists every container from docker ps
 ### 1.7.13 Clearer banner, image rows, and ps table
 ### 1.7.12 One action list drives help and completion
 ### 1.7.11 Pull lists images that have updates

@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.13
-### ChangeNotes: Clearer banner, image rows, and ps table.
+VERSION=v1.7.14
+### ChangeNotes: ps lists every container from docker ps.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -62,8 +62,8 @@ PaintStatus() {
     local lower
     lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
     case "$lower" in
+        *unhealthy*|*restarting*|*paused*|*created*) color="$c_yellow" ;;
         up\ *|*running*|*healthy*) color="$c_green" ;;
-        *paused*|*restarting*|*created*) color="$c_yellow" ;;
         *exited*|*stopped*|*dead*) color="$c_red" ;;
     esac
     printf '%b%s%b' "$color" "$text" "$c_reset"
@@ -887,9 +887,11 @@ ShortenPorts() {
 }
 
 Ps() {
-    local dir path file line cname cstatus cports
+    local cname cstatus cports project service low
     local -a row_svc=() row_name=() row_status=() row_ports=()
     local svc_w name_w status_w i ports_text mark color
+    local fmt=$'{{.Names}}\t{{.Status}}\t{{.Ports}}\t{{.Label "com.docker.compose.project"}}'
+    local want="" have_dir=0
 
     Banner "ps"
     if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
@@ -897,38 +899,30 @@ Ps() {
         return
     fi
     if [[ -n "$folder" && "$folder" != "all" ]]; then
-        if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
-            file="$APPS/$folder/$COMPOSE_FILE"
-        elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
-            Say warn "Service is disabled."
-            exit 1
-        else
+        want="${folder,,}"
+        [[ -d "$APPS/$folder" ]] && have_dir=1
+    fi
+    if ! docker ps -a --format "$fmt" >/dev/null 2>&1; then
+        Say bad "docker ps failed."
+        return 1
+    fi
+    while IFS=$'\t' read -r cname cstatus cports project; do
+        [[ -z "$cname" ]] && continue
+        service="${project:-"-"}"
+        if [[ -n "$want" && "${service,,}" != "$want" ]]; then
+            continue
+        fi
+        row_svc+=("$service")
+        row_name+=("$cname")
+        row_status+=("$cstatus")
+        row_ports+=("$(ShortenPorts "$cports")")
+    done < <(docker ps -a --format "$fmt" | sort -t $'\t' -k4,4 -k1,1)
+
+    if [[ ${#row_name[@]} -eq 0 ]]; then
+        if [[ -n "$want" && "$have_dir" -eq 0 ]]; then
             Say bad "Service does not exist."
             exit 1
         fi
-        while IFS=$'\t' read -r cname cstatus cports; do
-            [[ -z "$cname" ]] && continue
-            row_svc+=("$folder")
-            row_name+=("$cname")
-            row_status+=("$cstatus")
-            row_ports+=("$(ShortenPorts "$cports")")
-        done < <("${DockerCmd[@]}" --file "$file" --env-file "$envFile" ps -a --format $'{{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true)
-    else
-        while IFS= read -r dir; do
-            [[ -f "${dir}${COMPOSE_FILE}" ]] || continue
-            path="$(basename "$dir")"
-            file="${dir}${COMPOSE_FILE}"
-            while IFS=$'\t' read -r cname cstatus cports; do
-                [[ -z "$cname" ]] && continue
-                row_svc+=("$path")
-                row_name+=("$cname")
-                row_status+=("$cstatus")
-                row_ports+=("$(ShortenPorts "$cports")")
-            done < <("${DockerCmd[@]}" --file "$file" --env-file "$envFile" ps -a --format $'{{.Name}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true)
-        done < <(ServiceDirs)
-    fi
-
-    if [[ ${#row_name[@]} -eq 0 ]]; then
         Say info "No containers."
         return 0
     fi
@@ -939,7 +933,9 @@ Ps() {
         "$(PadRight "service" "$svc_w")" "$(PadRight "name" "$name_w")" \
         "$(PadRight "status" "$status_w")" "ports" "$c_reset"
     for i in "${!row_name[@]}"; do
-        case "$(printf '%s' "${row_status[$i]}" | tr '[:upper:]' '[:lower:]')" in
+        low="$(printf '%s' "${row_status[$i]}" | tr '[:upper:]' '[:lower:]')"
+        case "$low" in
+            *restarting*|*unhealthy*) mark="·"; color="$c_yellow" ;;
             up\ *|*healthy*) mark="✔"; color="$c_green" ;;
             *exited*|*dead*) mark="✘"; color="$c_red" ;;
             *) mark="·"; color="$c_yellow" ;;
