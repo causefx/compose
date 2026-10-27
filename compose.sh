@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.4
-### ChangeNotes: Added repull to re-download repo files.
+VERSION=v1.7.5
+### ChangeNotes: Pull skips images already at the registry digest.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -52,7 +52,7 @@ Help() {
   printf "%s %15s\n" "Ps" "         Show container(s)";
   printf "%s %15s\n" "Logs" "       Show service logs";
   printf "%s %15s\n" "Images" "     List compose images and tags";
-  printf "%s %15s\n" "Pull" "       Pull compose images; asks about disabled";
+  printf "%s %15s\n" "Pull" "       Pull images; skip ones already current";
   printf "%s %15s\n" "Config" "     Render compose file(s)";
   printf "%s %15s\n" "Create" "     Create service";
   printf "%s %15s\n" "Remove" "     Remove service";
@@ -963,6 +963,75 @@ GetFileImages() {
     fi
 }
 
+NormalizeImageRef() {
+    local ref="$1"
+    ref="${ref#index.docker.io/}"
+    ref="${ref#docker.io/}"
+    if [[ "$ref" == library/* && "${ref#library/}" != */* ]]; then
+        ref="${ref#library/}"
+    fi
+    if [[ "$ref" != *@* ]]; then
+        local repo="${ref##*/}"
+        if [[ "$repo" != *:* ]]; then
+            ref="${ref}:latest"
+        fi
+    fi
+    printf '%s' "$ref"
+}
+
+LoadLocalDigests() {
+    local repo tag digest key
+    unset LOCAL_IMAGE_DIGESTS
+    declare -gA LOCAL_IMAGE_DIGESTS=()
+    while IFS='|' read -r repo tag digest; do
+        [[ -z "$repo" || -z "$digest" || "$digest" == "<none>" ]] && continue
+        [[ -z "$tag" || "$tag" == "<none>" ]] && continue
+        key="$(NormalizeImageRef "${repo}:${tag}")"
+        LOCAL_IMAGE_DIGESTS["$key"]="$digest"
+    done < <(docker image ls --digests --no-trunc --format '{{.Repository}}|{{.Tag}}|{{.Digest}}' 2>/dev/null || true)
+}
+
+RemoteManifestDigest() {
+    local ref="$1"
+    local out digest
+    if out="$(docker buildx imagetools inspect "$ref" 2>/dev/null)"; then
+        digest="$(printf '%s\n' "$out" | sed -n 's/^Digest:[[:space:]]*//p' | head -n 1)"
+        if [[ "$digest" == sha256:* ]]; then
+            printf '%s' "$digest"
+            return 0
+        fi
+    fi
+    if out="$(docker manifest inspect --verbose "$ref" 2>/dev/null)"; then
+        digest="$(printf '%s\n' "$out" | grep -oE 'sha256:[a-f0-9]{64}' | head -n 1)"
+        if [[ -n "$digest" ]]; then
+            printf '%s' "$digest"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+ImageNeedsPull() {
+    local ref="$1"
+    local key digest remote
+    if [[ "$ref" == *@sha256:* ]]; then
+        digest="${ref##*@}"
+        for key in "${!LOCAL_IMAGE_DIGESTS[@]}"; do
+            [[ "${LOCAL_IMAGE_DIGESTS[$key]}" == "$digest" ]] && return 1
+        done
+        docker image inspect "$digest" &>/dev/null && return 1
+        return 0
+    fi
+    key="$(NormalizeImageRef "$ref")"
+    digest="${LOCAL_IMAGE_DIGESTS[$key]:-}"
+    if [[ -z "$digest" ]]; then
+        return 0
+    fi
+    remote="$(RemoteManifestDigest "$ref")" || return 0
+    [[ "$remote" == "$digest" ]] && return 1
+    return 0
+}
+
 PrintMissingTags() {
     local ref missing=0
     for ref in "$@"; do
@@ -1128,8 +1197,59 @@ ShowImages() {
         exit 1
     fi
 
-    total=${#chosen_refs[@]}
+    local -a stale_refs=()
+    local -a check_pids=()
+    local status_dir current_count stale_count max_checks=8
+    local check_i result_line
+
+    printf "%s\n" "Checking ${#chosen_refs[@]} image(s) against the registry..."
+    LoadLocalDigests
+    status_dir="$(mktemp -d)"
+    check_i=0
     for img_ref in "${chosen_refs[@]}"; do
+        printf '%s\n' "$img_ref" > "$status_dir/$check_i.ref"
+        (
+            if ImageNeedsPull "$img_ref"; then
+                echo pull > "$status_dir/$check_i.result"
+            else
+                echo current > "$status_dir/$check_i.result"
+            fi
+        ) &
+        check_pids+=("$!")
+        if [[ ${#check_pids[@]} -ge $max_checks ]]; then
+            wait "${check_pids[0]}" || true
+            check_pids=("${check_pids[@]:1}")
+        fi
+        check_i=$((check_i+1))
+    done
+    for check_i in "${check_pids[@]}"; do
+        wait "$check_i" || true
+    done
+
+    current_count=0
+    stale_count=0
+    check_i=0
+    for img_ref in "${chosen_refs[@]}"; do
+        result_line="$(cat "$status_dir/$check_i.result" 2>/dev/null || echo pull)"
+        if [[ "$result_line" == "current" ]]; then
+            current_count=$((current_count+1))
+        else
+            stale_refs+=("$img_ref")
+            stale_count=$((stale_count+1))
+        fi
+        check_i=$((check_i+1))
+    done
+    rm -rf "$status_dir"
+
+    printf "%s\n" "${current_count} image(s) already match the registry."
+    if [[ "$stale_count" -eq 0 ]]; then
+        echo -e "${c_green}Nothing to pull.${c_reset}"
+        return 0
+    fi
+
+    total=$stale_count
+    index=1
+    for img_ref in "${stale_refs[@]}"; do
         printf "%s\n" "--- Pulling (${index}/${total}) ${img_ref} ---"
         if ! docker pull "$img_ref"; then
             echo -e "${c_red}Failed to pull${c_reset} [${img_ref}]"
