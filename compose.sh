@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.6.0
-### ChangeNotes: Added images, pull, and dc.bash. See README.md for past changes.
+VERSION=v1.7.0
+### ChangeNotes: One command runner, logs/ps/config, update check on demand.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAWURL="https://raw.githubusercontent.com/causefx/compose/main/compose.sh"
 GITHUB_RAW_DC="https://raw.githubusercontent.com/causefx/compose/main/dc.bash"
@@ -9,9 +9,11 @@ SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_NAME="$(basename "$SCRIPT_PATH")"
 SCRIPT_WORKING_DIR="$(dirname "$SCRIPT_PATH")"
 
-### Check if there's a new release of the script:
-LATEST_RELEASE="$(curl -s -r 0-50 $GITHUB_RAWURL | sed -n "/VERSION/s/VERSION=//p" | tr -d '"')"
-LATEST_CHANGES="$(curl -s -r 0-200 $GITHUB_RAWURL | sed -n "/ChangeNotes/s/### ChangeNotes: //p")"
+LATEST_RELEASE=""
+LATEST_CHANGES=""
+EXTRA_ARGS=()
+declare -A PROJECT_STATUS=()
+PROJECT_STATUS_LOADED=0
 
 ### Colors:
 c_red="\033[0;31m"
@@ -31,6 +33,8 @@ Help() {
   echo "-a         Action to perform."
   echo "-f | -s    Folder/Service name."
   echo "-e         (Optional) ENV full file path. | Default: $SCRIPT_WORKING_DIR/.env"
+  echo "Args after -- are passed through to docker compose."
+  echo "Example:    compose.sh -a logs -s plex -- --tail 100"
   printf "%s\n" "--- Available Actions ---"
   printf "%s %15s\n" "Action" "     Description";
   printf "%s %15s\n" "Help" "       This help menu";
@@ -39,13 +43,17 @@ Help() {
   printf "%s %15s\n" "Start" "      Start service(s)";
   printf "%s %15s\n" "Stop" "       Stop service(s)";
   printf "%s %15s\n" "Restart" "    Restart service container(s)";
+  printf "%s %15s\n" "Build" "      Build service image(s)";
   printf "%s %15s\n" "Pause" "      Pause service(s)";
   printf "%s %15s\n" "Unpause" "    Unpause service(s)";
   printf "%s %15s\n" "Enable" "     Enable service(s)";
   printf "%s %15s\n" "Disable" "    Disable service(s)";
   printf "%s %15s\n" "List" "       List service(s)";
+  printf "%s %15s\n" "Ps" "         Show container(s)";
+  printf "%s %15s\n" "Logs" "       Show service logs";
   printf "%s %15s\n" "Images" "     List compose images and tags";
   printf "%s %15s\n" "Pull" "       Pull compose images; asks about disabled";
+  printf "%s %15s\n" "Config" "     Render compose file(s)";
   printf "%s %15s\n" "Create" "     Create service";
   printf "%s %15s\n" "Remove" "     Remove service";
   printf "%s %15s\n" "Version" "    Display version";
@@ -64,6 +72,11 @@ while getopts "ha:f:s:e:" options; do
     h|*) Help ; exit 0 ;;
   esac
 done
+shift $((OPTIND-1))
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+EXTRA_ARGS=("$@")
 
 LowerCaseArguments() {
     action=$(echo "$action" | tr '[:upper:]' '[:lower:]')
@@ -76,12 +89,13 @@ CheckEnv() {
         envFile="$SCRIPT_WORKING_DIR/.env"
     fi
 
-    if [ ! -f $envFile ]; then
+    if [ ! -f "$envFile" ]; then
         echo -e "\033[31mEnv file does not exist...\033[0m [$envFile]"
         exit
     fi
 
-    source $envFile
+    # shellcheck disable=SC1090
+    source "$envFile"
 }
 
 CheckEnvVariables() {
@@ -107,31 +121,64 @@ CheckEnvVariables() {
 }
 
 CheckDockerCompose() {
-    if docker compose version &> /dev/null ; then DockerBin="docker compose" ;
-    elif docker-compose -v &> /dev/null; then DockerBin="docker-compose" ;
-    printf "%s\n" "No docker binaries available, exiting."
-    exit 1
+    if docker compose version &> /dev/null; then
+        DockerCmd=(docker compose)
+    elif docker-compose version &> /dev/null || docker-compose -v &> /dev/null; then
+        DockerCmd=(docker-compose)
+    else
+        printf "%s\n" "No docker binaries available, exiting."
+        exit 1
     fi
+}
+
+LoadProjectStatus() {
+    local json name status
+    local -a names=() statuses=()
+    local i
+
+    if [[ "$PROJECT_STATUS_LOADED" -eq 1 ]]; then
+        return 0
+    fi
+    PROJECT_STATUS=()
+    PROJECT_STATUS_LOADED=1
+    json="$("${DockerCmd[@]}" ls -a --format json 2>/dev/null || true)"
+    [[ -n "$json" ]] || return 0
+
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && names+=("$name")
+    done < <(printf '%s\n' "$json" | grep -oE '"Name":[[:space:]]*"[^"]*"' | sed -E 's/^"Name":[[:space:]]*"([^"]*)"$/\1/')
+    while IFS= read -r status; do
+        [[ -n "$status" ]] && statuses+=("$status")
+    done < <(printf '%s\n' "$json" | grep -oE '"Status":[[:space:]]*"[^"]*"' | sed -E 's/^"Status":[[:space:]]*"([^"]*)"$/\1/')
+
+    if [[ ${#names[@]} -ne ${#statuses[@]} ]]; then
+        return 0
+    fi
+    for i in "${!names[@]}"; do
+        PROJECT_STATUS["${names[$i]}"]="${statuses[$i]}"
+    done
 }
 
 CheckStatus() {
-    CheckFolderSupplied $1
-    status=$($DockerBin ls -a --filter name=$1 --format=table | grep -Eos '(running|paused|stopped|exited)')
-     if [ -n "$status" ]; then
+    local name="$1"
+    local status
+    CheckFolderSupplied "$name"
+    LoadProjectStatus
+    status="${PROJECT_STATUS[$name]:-}"
+    if [[ "$status" =~ (running|paused|stopped|exited|restarting|created|dead) ]]; then
         return 0
-    else
-        return 1
     fi
+    return 1
 }
 
 ReturnStatus() {
-    CheckFolderSupplied $1
-    status=$($DockerBin ls -a --filter name="$1" --format=table | grep -w "^$1 " | grep -Eo '(exited\([0-9]+\)|running\([0-9]+\)|paused\([0-9]+\)|stopped\([0-9]+\))' | paste -sd ', ' -)
-
-    if [ -n "$status" ]; then
-        echo $status
+    local name="$1"
+    CheckFolderSupplied "$name"
+    LoadProjectStatus
+    if [[ -n "${PROJECT_STATUS[$name]:-}" ]]; then
+        printf '%s' "${PROJECT_STATUS[$name]}"
     else
-        echo " - "
+        printf '%s' " - "
     fi
 }
 
@@ -155,33 +202,47 @@ CheckAction() {
     case $action in
         up)
             printf "%s\n" "--- Starting services ---"
-            SimpleAction "up -d" "$folder"
+            RunServices "$folder" up -d "${EXTRA_ARGS[@]}"
             ;;
         down)
             printf "%s\n" "--- Stopping services ---"
-            SimpleAction "down" $folder
+            RunServices "$folder" down "${EXTRA_ARGS[@]}"
             ;;
         start)
-            Start $folder
+            printf "%s\n" "--- Starting services ---"
+            RunServices "$folder" start "${EXTRA_ARGS[@]}"
             ;;
         stop)
-            Stop $folder
+            printf "%s\n" "--- Stopping services ---"
+            RunServices "$folder" stop "${EXTRA_ARGS[@]}"
             ;;
         restart)
             printf "%s\n" "--- Restarting services ---"
-            SimpleAction "restart" $folder
+            RunServices "$folder" restart "${EXTRA_ARGS[@]}"
             ;;
         build)
             printf "%s\n" "--- Building services ---"
-            SimpleAction "build" $folder
+            RunServices "$folder" build "${EXTRA_ARGS[@]}"
             ;;
         pause)
             printf "%s\n" "--- Pausing services ---"
-            SimpleAction "pause" $folder
+            RunServices "$folder" pause "${EXTRA_ARGS[@]}"
             ;;
         unpause)
             printf "%s\n" "--- Unpausing services ---"
-            SimpleAction "unpause" $folder
+            RunServices "$folder" unpause "${EXTRA_ARGS[@]}"
+            ;;
+        ps)
+            printf "%s\n" "--- Containers ---"
+            RunServices "$folder" ps "${EXTRA_ARGS[@]}"
+            ;;
+        logs)
+            printf "%s\n" "--- Logs ---"
+            Logs
+            ;;
+        config)
+            printf "%s\n" "--- Compose config ---"
+            RunServices "$folder" config "${EXTRA_ARGS[@]}"
             ;;
         enable)
             echo -e "\033[32mEnabling service\033[0m [$folder]"
@@ -209,6 +270,7 @@ CheckAction() {
             ;;
         version)
             printf "%s\n" "--- Version ${VERSION} ---"
+            CheckVersion
             ;;
         update)
             CheckVersion "silent"
@@ -226,13 +288,13 @@ CheckAction() {
             Help
             ;;
         *)
-            echo "Invalid option. Please use up, down, restart, list, images, pull, create, enable or disable."
+            echo "Invalid option. Run compose.sh -h for available actions."
             Help
             exit
             ;;
     esac
     if [ -z "$action" ]; then
-        echo "Invalid option. Please use up, down, restart, list, images, pull, create, enable or disable."
+        echo "Invalid option. Run compose.sh -h for available actions."
         exit
     fi
 }
@@ -240,16 +302,17 @@ CheckAction() {
 CheckVersion() {
     local silent="$1"  # Accept an optional parameter
 
+    LATEST_RELEASE="$(curl -s -r 0-50 "$GITHUB_RAWURL" | sed -n "/VERSION/s/VERSION=//p" | tr -d '"')"
+    LATEST_CHANGES="$(curl -s -r 0-200 "$GITHUB_RAWURL" | sed -n "/ChangeNotes/s/### ChangeNotes: //p")"
+
     ### Check if LATEST_RELEASE is empty and skip if so
     if [[ -z "$LATEST_RELEASE" ]]; then
+        if [[ "$silent" ]]; then
+            printf "%s\n" "--- Could not check for updates ---"
+        fi
         return
     fi
 
-    ### Bypass if all
-    if [[ "$folder" == "all" ]] ; then
-        return
-    fi
-    
     ### Version check & initiate self update
     if [[ "$VERSION" != "$LATEST_RELEASE" ]] ; then
         printf "New version available! %b%s%b ⇒ %b%s%b \n Change Notes: %s \n" "$c_yellow" "$VERSION" "$c_reset" "$c_green" "$LATEST_RELEASE" "$c_reset" "$LATEST_CHANGES"
@@ -332,20 +395,21 @@ Update() {
 }
 
 List() {
+    local dir path status
     printf "%25s    %s     %s\n" "Service" "Status" "  Container(s)";
-    for dir in $APPS/*/; do
-        path=$(basename $dir)
-        status=$(ReturnStatus $path)
+    LoadProjectStatus
+    for dir in "$APPS"/*/; do
+        [[ -d "$dir" ]] || continue
+        path="$(basename "$dir")"
+        status="$(ReturnStatus "$path")"
         if [ -z "$status" ]; then
             status="No container"
         fi
         if [ -f "$dir/$COMPOSE_FILE" ]; then
-            #echo -e $path ['\033[32menabled\033[0m'] - [$status]
-            printf "%25s    %b%s%b     %s\n" $path "$c_green" "Enabled " "$c_reset" $status;
+            printf "%25s    %b%s%b     %s\n" "$path" "$c_green" "Enabled " "$c_reset" "$status";
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
-            #echo -e $path ['\033[31mdisabled\033[0m'] - [$status]
-            printf "%25s    %b%s%b     %s\n" $path "$c_red" "Disabled" "$c_reset" $status;
+            printf "%25s    %b%s%b     %s\n" "$path" "$c_red" "Disabled" "$c_reset" "$status";
         fi
     done
 }
@@ -364,7 +428,7 @@ Toggle() {
                     read -p "Service is currently running, do you want to stop and remove it? (y/n) " removeAnswer
                     if [[ "$removeAnswer" == [yY] ]]; then
                         echo "Stopping and removing container..."
-                        $DockerBin --file $APPS/$folder/$COMPOSE_FILE --env-file $envFile down
+                        "${DockerCmd[@]}" --file "$APPS/$folder/$COMPOSE_FILE" --env-file "$envFile" down
                         echo "Service removed..."
                     else
                         echo "Keeping service..."
@@ -381,71 +445,142 @@ Toggle() {
     fi
 }
 
-Remove() {
-    echo "Removing service..."
-    CheckFolderSupplied $1
-    if CheckStatus $1; then
-        echo "Service is running... stopping now..."
-        $DockerBin --file $APPS/$1/$COMPOSE_FILE --env-file $envFile down
+ServiceDir() {
+    local name="$1"
+    local parent target
+
+    if [[ -z "$name" || "$name" == *"/"* || "$name" == *".."* || "$name" == "." ]]; then
+        echo "Invalid service name." >&2
+        return 1
     fi
-    if [ -d "$APPS/$1" ]; then
-        read -p "Are you sure you want to delete the service folder: $APPS/$1? (y/n) " removeAnswer
-        if [[ "$removeAnswer" == [yY] ]]; then
-            read -p "Are you absolutely sure? This cannot be undone (y/n) " removeAnswerConfirm
-            if [[ "$removeAnswerConfirm" == [yY] ]]; then
-                echo "Deleting folder..."
-                rm -r $APPS/$1
-                echo "Folder deleted..."
-            else
-                echo "Keeping folder..."
-            fi
+    if [[ ! -d "$APPS" ]]; then
+        echo "APPS directory does not exist..." >&2
+        return 1
+    fi
+
+    parent="$(cd -P "$APPS" && pwd -P)"
+    target="$parent/$name"
+    if [[ ! -d "$target" ]]; then
+        echo "Service does not exist..." >&2
+        return 1
+    fi
+    target="$(cd -P "$target" && pwd -P)"
+    case "$target" in
+        "$parent"/*) printf '%s\n' "$target" ;;
+        *)
+            echo "Refusing to delete a path outside $parent" >&2
+            return 1
+            ;;
+    esac
+}
+
+Remove() {
+    local name="$1"
+    local target compose_file=""
+
+    CheckFolderSupplied "$name"
+    if ! target="$(ServiceDir "$name")"; then
+        exit 1
+    fi
+    printf "%s\n" "Removing service folder: $target"
+
+    if [[ -f "$APPS/$name/$COMPOSE_FILE" ]]; then
+        compose_file="$APPS/$name/$COMPOSE_FILE"
+    elif [[ -f "$APPS/$name/$COMPOSE_FILE_DISABLED" ]]; then
+        compose_file="$APPS/$name/$COMPOSE_FILE_DISABLED"
+    fi
+    if [[ -n "$compose_file" ]] && CheckStatus "$name"; then
+        echo "Service is running... stopping now..."
+        "${DockerCmd[@]}" --file "$compose_file" --env-file "$envFile" down
+    fi
+
+    read -r -p "Are you sure you want to delete the service folder: $target? (y/n) " removeAnswer
+    if [[ "$removeAnswer" == [yY] ]]; then
+        read -r -p "Are you absolutely sure? This cannot be undone (y/n) " removeAnswerConfirm
+        if [[ "$removeAnswerConfirm" == [yY] ]]; then
+            echo "Deleting folder..."
+            rm -r -- "$target"
+            echo "Folder deleted..."
         else
             echo "Keeping folder..."
         fi
     else
-        echo "Service does not exist..."
+        echo "Keeping folder..."
     fi
 }
 
-BulkAction() {
-    if [ -z "$2" ] || [ "$2" == "all" ]; then
-        if [ "$2" != "all" ]; then
-            read -p "No folder/service was provided - Would you like to loop through all services? ([Y]es/[n]o) " answer
-        else
-            answer="Y"
-        fi
-        if [[ "$answer" == [yY] ]]; then
-            for dir in $APPS/*/; do
-                if [ -f "$dir/$COMPOSE_FILE" ]; then
-                    $DockerBin --file $dir$COMPOSE_FILE --env-file $envFile $1
-                fi
-            done
-        else
-            echo "Exiting"
-        fi
-        exit
-    else
-        if [ -f "$APPS/$2/$COMPOSE_FILE" ]; then
-            printf "%s\n" "--- Performing actions for $2 ---"
-            $DockerBin --file $APPS/$2/$COMPOSE_FILE --env-file $envFile $1
-        fi
-    fi
+RunOneCompose() {
+    local file="$1"
+    shift
+    "${DockerCmd[@]}" --file "$file" --env-file "$envFile" "$@"
 }
 
-SimpleAction() {
-    if CheckFolderSuppliedNoExit "$2"; then
-        BulkAction "$1" "$2"
-    else
-        BulkAction "$1"
+RunServices() {
+    local service="$1"
+    shift
+    local dir path failed=0 ran=0 had_nullglob=0
+
+    if [[ -z "$service" || "$service" == "all" ]]; then
+        if [[ -z "$service" ]]; then
+            read -r -p "No folder/service was provided - Would you like to loop through all services? ([Y]es/[n]o) " answer
+            if [[ "$answer" != [yY] ]]; then
+                echo "Exiting"
+                return
+            fi
+        fi
+        if shopt -q nullglob; then
+            had_nullglob=1
+        fi
+        shopt -s nullglob
+        for dir in "$APPS"/*/; do
+            [[ -f "${dir}${COMPOSE_FILE}" ]] || continue
+            path="$(basename "$dir")"
+            printf "%s\n" "--- Performing actions for $path ---"
+            ran=1
+            if ! RunOneCompose "${dir}${COMPOSE_FILE}" "$@"; then
+                failed=$((failed+1))
+            fi
+        done
+        if [[ "$had_nullglob" -eq 0 ]]; then
+            shopt -u nullglob
+        fi
+        if [[ "$ran" -eq 0 ]]; then
+            echo "No enabled services found."
+            return
+        fi
+        [[ "$failed" -eq 0 ]] || exit 1
+        return
     fi
+
+    if [[ "$service" == *"/"* || "$service" == *".."* || "$service" == "." ]]; then
+        echo "Invalid service name."
+        exit 1
+    fi
+    if [[ -f "$APPS/$service/$COMPOSE_FILE" ]]; then
+        printf "%s\n" "--- Performing actions for $service ---"
+        RunOneCompose "$APPS/$service/$COMPOSE_FILE" "$@" || exit 1
+        return
+    fi
+    if [[ -f "$APPS/$service/$COMPOSE_FILE_DISABLED" ]]; then
+        echo "Service is disabled..."
+        exit 1
+    fi
+    echo "Service does not exist..."
+    exit 1
 }
 
-Stop() {
-    if CheckFolderSuppliedNoExit "$1"; then
-        BulkAction stop "$1"
-    else
-        BulkAction stop
+Logs() {
+    local arg follow=0
+    for arg in "${EXTRA_ARGS[@]}"; do
+        case "$arg" in
+            -f|--follow) follow=1 ;;
+        esac
+    done
+    if [[ "$follow" -eq 1 && ( -z "$folder" || "$folder" == "all" ) ]]; then
+        echo "Follow needs a service name."
+        exit 1
     fi
+    RunServices "$folder" logs "${EXTRA_ARGS[@]}"
 }
 
 EditFile() {
@@ -483,37 +618,6 @@ EditFile() {
     fi
 }
 
-
-Start() {
-    if CheckFolderSuppliedNoExit "$1"; then
-        BulkAction start "$1"
-    else
-        BulkAction start
-    fi
-    #CheckFolderSupplied $1
-    #if CheckStatus $1; then
-    #    echo "Starting service now..."
-    #    $DockerBin --file $APPS/$1/$COMPOSE_FILE --env-file $envFile start
-    #else
-    #    $DockerBin --file $APPS/$1/$COMPOSE_FILE --env-file $envFile up -d
-    #fi
-}
-
-Up() {
-    if CheckFolderSuppliedNoExit $1; then
-        BulkAction "up -d" "$1"
-    else
-        BulkAction "up -d"
-    fi
-}
-
-Down() {
-    if CheckFolderSuppliedNoExit $1; then
-        BulkAction down $1
-    else
-        BulkAction down
-    fi
-}
 
 Create() {
     if ! CheckFolderSuppliedNoExit $1; then
@@ -741,7 +845,7 @@ ComposeConfigImages() {
     local output status err line
     err="$(mktemp)" || return 1
 
-    output=$($DockerBin --file "$file" --env-file "$envFile" config --images 2>"$err")
+    output=$("${DockerCmd[@]}" --file "$file" --env-file "$envFile" config --images 2>"$err")
     status=$?
     if [ "$status" -eq 0 ]; then
         rm -f "$err"
@@ -752,7 +856,7 @@ ComposeConfigImages() {
         return 0
     fi
 
-    output=$($DockerBin --file "$file" --env-file "$envFile" config 2>"$err")
+    output=$("${DockerCmd[@]}" --file "$file" --env-file "$envFile" config 2>"$err")
     status=$?
     if [ "$status" -eq 0 ]; then
         rm -f "$err"
@@ -1017,7 +1121,6 @@ CheckEnv;
 CheckEnvVariables;
 LowerCaseArguments;
 CheckDockerCompose;
-CheckVersion;
 CheckAction;
 
 exit 0

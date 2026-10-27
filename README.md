@@ -20,11 +20,14 @@ source /home/docker/docker/dc.bash
 ```bash
 dc list
 dc up plex
+dc logs plex --tail 100
+dc ps plex
+dc config plex
 dc images
 dc pull
 ```
 
-`dc` takes an action and an optional service name. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`.
+`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service.
 
 ### Updates
 
@@ -36,6 +39,7 @@ That downloads a new `compose.sh` and a new `dc.bash`. On a git checkout of this
 
 ## Changes
 
+### 1.7.0 One command runner, logs/ps/config, and update checks only on version and update
 ### 1.6.0 Added images and pull actions, and a sourced dc.bash helper
 ### 1.5.0 Updated edit function to check disabled services
 ### 1.4.5 Added Env action and fixed edit action

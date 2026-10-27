@@ -3,10 +3,21 @@ COMPOSE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_SH="$COMPOSE_HOME/compose.sh"
 
 dc() {
-    if [[ -n "${2:-}" ]]; then
-        "$COMPOSE_SH" -a "$1" -s "$2"
+    local action="${1:-}"
+    shift || true
+    local service=""
+    local -a extra=()
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+        service="$1"
+        shift
+    fi
+    extra=("$@")
+    if [[ -n "$service" ]]; then
+        "$COMPOSE_SH" -a "$action" -s "$service" -- "${extra[@]}"
+    elif [[ ${#extra[@]} -gt 0 ]]; then
+        "$COMPOSE_SH" -a "$action" -- "${extra[@]}"
     else
-        "$COMPOSE_SH" -a "${1:-}"
+        "$COMPOSE_SH" -a "$action"
     fi
 }
 
@@ -36,7 +47,7 @@ _dc_completions() {
     local cur opts_a opts_s apps dir name
     cur="${COMP_WORDS[COMP_CWORD]}"
 
-    opts_a="help up down start stop restart pause unpause enable disable list images pull create remove version update ports edit env"
+    opts_a="help up down start stop restart build pause unpause enable disable list ps logs images pull config create remove version update ports edit env"
     apps="$(_dc_apps_dir)"
     opts_s="all"
     for dir in "$apps"/*/; do
