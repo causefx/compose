@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.3
-### ChangeNotes: Non-git update refreshes every repo file.
+VERSION=v1.7.4
+### ChangeNotes: Added repull to re-download repo files.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -57,7 +57,8 @@ Help() {
   printf "%s %15s\n" "Create" "     Create service";
   printf "%s %15s\n" "Remove" "     Remove service";
   printf "%s %15s\n" "Version" "    Display version";
-  printf "%s %15s\n" "Update" "     Update script";
+  printf "%s %15s\n" "Update" "     Update script when a new version exists";
+  printf "%s %15s\n" "Repull" "     Re-download repo files";
   printf "%s %15s\n" "Ports" "      Show ports from ENV file";
   printf "%s %15s\n" "Edit" "       Edit service";
   printf "%s %15s\n" "Env" "        Edit env file";
@@ -275,6 +276,10 @@ CheckAction() {
             ;;
         update)
             CheckVersion "silent"
+            ;;
+        repull)
+            printf "%s\n" "--- Re-downloading repo files ---"
+            Update
             ;;
         ports)
             CheckPorts

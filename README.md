@@ -35,9 +35,12 @@ dc pull
 
 ```bash
 dc update
+dc repull
 ```
 
-Without git, that downloads `compose.sh`, `dc.bash`, `docker-compose.yml`, `README.md`, `.env.example`, `.gitignore`, and `LICENSE`. Your `.env` stays as it is. On a git checkout of this repo, the same command pulls the repo and updates those files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
+`dc update` checks the published version and downloads when it differs. `dc repull` downloads again even when the version already matches.
+
+Without git, both commands download `compose.sh`, `dc.bash`, `docker-compose.yml`, `README.md`, `.env.example`, `.gitignore`, and `LICENSE`. Your `.env` stays as it is. On a git checkout of this repo, they pull the repo and update those files. Open a new shell afterward so the helper reloads. New actions show up in Tab completion without editing `~/.bashrc`.
 
 ## Service stub
 
@@ -47,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.4 Added repull to re-download repo files
 ### 1.7.3 Non-git update refreshes every repo file
 ### 1.7.2 Quoted stub placeholders and bridge network_mode
 ### 1.7.1 Added bashrc action to print the dc.bash source line
