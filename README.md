@@ -50,6 +50,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.8 Pull reads RepoDigests when the list digest is blank
 ### 1.7.7 Batch actions print one line per service
 ### 1.7.6 Pull matches the index or platform digest
 ### 1.7.5 Pull skips images already at the registry digest

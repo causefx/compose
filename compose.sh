@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.7
-### ChangeNotes: Batch actions print one line per service.
+VERSION=v1.7.8
+### ChangeNotes: Pull reads RepoDigests when the list digest is blank.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1174,16 +1174,58 @@ NormalizeImageRef() {
     printf '%s' "$ref"
 }
 
+DigestListHas() {
+    local list="$1"
+    local needle="$2"
+    [[ -n "$needle" && " $list " == *" $needle "* ]]
+}
+
+AddLocalDigest() {
+    local key="$1"
+    local digest="$2"
+    local current="${LOCAL_IMAGE_DIGESTS[$key]:-}"
+    DigestListHas "$current" "$digest" && return 0
+    if [[ -n "$current" ]]; then
+        LOCAL_IMAGE_DIGESTS["$key"]="$current $digest"
+    else
+        LOCAL_IMAGE_DIGESTS["$key"]="$digest"
+    fi
+}
+
+RecordImageDigestLine() {
+    local line="$1"
+    local tags_json digests_json tag_item digest_item digest key
+    [[ "$line" == *$'\t'* ]] || return 0
+    tags_json="${line%%$'\t'*}"
+    digests_json="${line#*$'\t'}"
+    [[ -z "$tags_json" || "$tags_json" == "[]" || "$tags_json" == "null" ]] && return 0
+    [[ -z "$digests_json" || "$digests_json" == "[]" || "$digests_json" == "null" ]] && return 0
+    while IFS= read -r tag_item; do
+        [[ -z "$tag_item" ]] && continue
+        key="$(NormalizeImageRef "$tag_item")"
+        while IFS= read -r digest_item; do
+            digest="${digest_item#*@}"
+            [[ "$digest" == sha256:* ]] || continue
+            AddLocalDigest "$key" "$digest"
+        done < <(printf '%s\n' "$digests_json" | grep -oE '"[^"]*"' | sed 's/^"//;s/"$//')
+    done < <(printf '%s\n' "$tags_json" | grep -oE '"[^"]*"' | sed 's/^"//;s/"$//')
+}
+
 LoadLocalDigests() {
-    local repo tag digest key
+    local id line
+    local -a ids=()
+    local -A seen_ids=()
     unset LOCAL_IMAGE_DIGESTS
     declare -gA LOCAL_IMAGE_DIGESTS=()
-    while IFS='|' read -r repo tag digest; do
-        [[ -z "$repo" || -z "$digest" || "$digest" == "<none>" ]] && continue
-        [[ -z "$tag" || "$tag" == "<none>" ]] && continue
-        key="$(NormalizeImageRef "${repo}:${tag}")"
-        LOCAL_IMAGE_DIGESTS["$key"]="$digest"
-    done < <(docker image ls --digests --no-trunc --format '{{.Repository}}|{{.Tag}}|{{.Digest}}' 2>/dev/null || true)
+    while IFS= read -r id; do
+        [[ -z "$id" || -n "${seen_ids[$id]:-}" ]] && continue
+        seen_ids["$id"]=1
+        ids+=("$id")
+    done < <(docker image ls -q --no-trunc 2>/dev/null || true)
+    [[ ${#ids[@]} -eq 0 ]] && return 0
+    while IFS= read -r line; do
+        RecordImageDigestLine "$line"
+    done < <(docker image inspect --format '{{json .RepoTags}}{{"\t"}}{{json .RepoDigests}}' "${ids[@]}" 2>/dev/null || true)
 }
 
 ParseRemoteDigestLines() {
@@ -1205,24 +1247,36 @@ ParseRemoteDigestLines() {
 
 RemoteManifestDigests() {
     local ref="$1"
-    local out parsed=""
-    if out="$(docker buildx imagetools inspect "$ref" 2>/dev/null)"; then
+    local out parsed="" err=""
+    if out="$(docker buildx imagetools inspect "$ref" 2>&1)"; then
         parsed="$(printf '%s\n' "$out" | ParseRemoteDigestLines)"
+    else
+        err="$out"
     fi
-    if [[ -z "$parsed" ]] && out="$(docker manifest inspect --verbose "$ref" 2>/dev/null)"; then
-        parsed="$(printf '%s\n' "$out" | ParseRemoteDigestLines)"
+    if [[ -z "$parsed" ]]; then
+        if out="$(docker manifest inspect --verbose "$ref" 2>&1)"; then
+            parsed="$(printf '%s\n' "$out" | ParseRemoteDigestLines)"
+        else
+            err="${err}"$'\n'"${out}"
+        fi
     fi
-    [[ -n "$parsed" ]] || return 1
-    printf '%s\n' "$parsed"
+    if [[ -n "$parsed" ]]; then
+        printf '%s\n' "$parsed"
+        return 0
+    fi
+    if [[ "$err" == *"not found"* || "$err" == *"manifest unknown"* || "$err" == *"no such manifest"* ]]; then
+        return 2
+    fi
+    return 1
 }
 
 ImageNeedsPull() {
     local ref="$1"
-    local key digest remote
+    local key digest remote remotes remote_status=0
     if [[ "$ref" == *@sha256:* ]]; then
         digest="${ref##*@}"
         for key in "${!LOCAL_IMAGE_DIGESTS[@]}"; do
-            [[ "${LOCAL_IMAGE_DIGESTS[$key]}" == "$digest" ]] && return 1
+            DigestListHas "${LOCAL_IMAGE_DIGESTS[$key]}" "$digest" && return 1
         done
         docker image inspect "$digest" &>/dev/null && return 1
         return 0
@@ -1232,10 +1286,15 @@ ImageNeedsPull() {
     if [[ -z "$digest" ]]; then
         return 0
     fi
-    local remotes
-    remotes="$(RemoteManifestDigests "$ref")" || return 0
+    remotes="$(RemoteManifestDigests "$ref")" || remote_status=$?
+    if [[ "$remote_status" -eq 2 ]]; then
+        return 2
+    fi
+    if [[ "$remote_status" -ne 0 || -z "$remotes" ]]; then
+        return 0
+    fi
     while IFS= read -r remote; do
-        [[ -n "$remote" && "$remote" == "$digest" ]] && return 1
+        [[ -n "$remote" ]] && DigestListHas "$digest" "$remote" && return 1
     done <<< "$remotes"
     return 0
 }
@@ -1406,9 +1465,10 @@ ShowImages() {
     fi
 
     local -a stale_refs=()
+    local -a missing_refs=()
     local -a check_pids=()
-    local status_dir current_count stale_count max_checks=8
-    local check_i result_line
+    local status_dir current_count stale_count missing_count max_checks=8
+    local check_i result_line pull_status
 
     printf "%s\n" "Checking ${#chosen_refs[@]} image(s) against the registry..."
     LoadLocalDigests
@@ -1417,10 +1477,14 @@ ShowImages() {
     for img_ref in "${chosen_refs[@]}"; do
         printf '%s\n' "$img_ref" > "$status_dir/$check_i.ref"
         (
-            if ImageNeedsPull "$img_ref"; then
-                echo pull > "$status_dir/$check_i.result"
-            else
+            ImageNeedsPull "$img_ref"
+            pull_status=$?
+            if [[ "$pull_status" -eq 1 ]]; then
                 echo current > "$status_dir/$check_i.result"
+            elif [[ "$pull_status" -eq 2 ]]; then
+                echo missing > "$status_dir/$check_i.result"
+            else
+                echo pull > "$status_dir/$check_i.result"
             fi
         ) &
         check_pids+=("$!")
@@ -1436,11 +1500,15 @@ ShowImages() {
 
     current_count=0
     stale_count=0
+    missing_count=0
     check_i=0
     for img_ref in "${chosen_refs[@]}"; do
         result_line="$(cat "$status_dir/$check_i.result" 2>/dev/null || echo pull)"
         if [[ "$result_line" == "current" ]]; then
             current_count=$((current_count+1))
+        elif [[ "$result_line" == "missing" ]]; then
+            missing_refs+=("$img_ref")
+            missing_count=$((missing_count+1))
         else
             stale_refs+=("$img_ref")
             stale_count=$((stale_count+1))
@@ -1450,6 +1518,10 @@ ShowImages() {
     rm -rf "$status_dir"
 
     printf "%s\n" "${current_count} image(s) already match the registry."
+    if [[ "$missing_count" -gt 0 ]]; then
+        printf "%b%s%b\n" "$c_yellow" "${missing_count} image(s) stay on disk because that tag is no longer on the registry:" "$c_reset"
+        printf '  %s\n' "${missing_refs[@]}"
+    fi
     if [[ "$stale_count" -eq 0 ]]; then
         echo -e "${c_green}Nothing to pull.${c_reset}"
         return 0
