@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.6
-### ChangeNotes: Pull matches the index or platform digest.
+VERSION=v1.7.7
+### ChangeNotes: Batch actions print one line per service.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -21,7 +21,12 @@ c_green="\033[0;32m"
 c_yellow="\033[0;33m"
 c_blue="\033[0;34m"
 c_teal="\033[0;36m"
+c_dim="\033[2m"
 c_reset="\033[0m"
+
+Banner() {
+    printf "%b── %s ──%b\n" "$c_teal" "$*" "$c_reset"
+}
 
 ### Help Function:
 Help() {
@@ -203,47 +208,47 @@ CheckFolderSuppliedNoExit() {
 CheckAction() {
     case $action in
         up)
-            printf "%s\n" "--- Starting services ---"
+            Banner "up"
             RunServices "$folder" up -d "${EXTRA_ARGS[@]}"
             ;;
         down)
-            printf "%s\n" "--- Stopping services ---"
+            Banner "down"
             RunServices "$folder" down "${EXTRA_ARGS[@]}"
             ;;
         start)
-            printf "%s\n" "--- Starting services ---"
+            Banner "start"
             RunServices "$folder" start "${EXTRA_ARGS[@]}"
             ;;
         stop)
-            printf "%s\n" "--- Stopping services ---"
+            Banner "stop"
             RunServices "$folder" stop "${EXTRA_ARGS[@]}"
             ;;
         restart)
-            printf "%s\n" "--- Restarting services ---"
+            Banner "restart"
             RunServices "$folder" restart "${EXTRA_ARGS[@]}"
             ;;
         build)
-            printf "%s\n" "--- Building services ---"
+            Banner "build"
             RunServices "$folder" build "${EXTRA_ARGS[@]}"
             ;;
         pause)
-            printf "%s\n" "--- Pausing services ---"
+            Banner "pause"
             RunServices "$folder" pause "${EXTRA_ARGS[@]}"
             ;;
         unpause)
-            printf "%s\n" "--- Unpausing services ---"
+            Banner "unpause"
             RunServices "$folder" unpause "${EXTRA_ARGS[@]}"
             ;;
         ps)
-            printf "%s\n" "--- Containers ---"
+            Banner "ps"
             RunServices "$folder" ps "${EXTRA_ARGS[@]}"
             ;;
         logs)
-            printf "%s\n" "--- Logs ---"
+            Banner "logs"
             Logs
             ;;
         config)
-            printf "%s\n" "--- Compose config ---"
+            Banner "config"
             RunServices "$folder" config "${EXTRA_ARGS[@]}"
             ;;
         enable)
@@ -538,16 +543,184 @@ Remove() {
     fi
 }
 
+ComposeLineStatus() {
+    local line="$1"
+    local status
+    line="${line//$'\r'/}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" ]] && return 1
+    if [[ "$line" =~ ^\[[^]]+\][[:space:]]+[A-Za-z]+[[:space:]]+[0-9]+/[0-9]+[[:space:]]*$ ]]; then
+        return 1
+    fi
+    if [[ "$line" =~ Resource[[:space:]]+is[[:space:]]+still[[:space:]]+in[[:space:]]+use ]]; then
+        printf '%s' "InUse"
+        return 0
+    fi
+    if [[ "$line" =~ [[:space:]][0-9]+([.][0-9]+)?s[[:space:]]*$ ]]; then
+        line="${line% *}"
+        line="${line%"${line##*[![:space:]]}"}"
+    fi
+    if [[ ! "$line" =~ (Container|Network|Volume|Image)[[:space:]] ]]; then
+        return 2
+    fi
+    status="${line##* }"
+    if [[ ! "$status" =~ ^[A-Za-z]+$ ]]; then
+        return 2
+    fi
+    printf '%s' "$status"
+    return 0
+}
+
+ComposeStatusAllowed() {
+    local verb="$1"
+    local status="$2"
+    local ok=""
+    case "$verb" in
+        up|start|unpause) ok=" Running Healthy " ;;
+        restart) ok=" Started Running Healthy " ;;
+        stop) ok=" Stopped " ;;
+        pause) ok=" Paused " ;;
+        down) ok=" Removed InUse " ;;
+        *) return 1 ;;
+    esac
+    [[ "$ok" == *" $status "* ]]
+}
+
+ComposeOutputSteady() {
+    local verb="$1"
+    local file="$2"
+    local line status code count=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        code=0
+        status="$(ComposeLineStatus "$line")" || code=$?
+        if [[ "$code" -eq 1 ]]; then
+            continue
+        fi
+        if [[ "$code" -ne 0 ]]; then
+            return 1
+        fi
+        ComposeStatusAllowed "$verb" "$status" || return 1
+        if [[ "$status" != "InUse" ]]; then
+            count=$((count+1))
+        fi
+    done < <(tr '\r' '\n' < "$file")
+    [[ "$count" -gt 0 ]]
+}
+
+ComposeSteadyLabel() {
+    local verb="$1"
+    local file="$2"
+    local line status code key n
+    local -A tally=()
+    local order=(running healthy restarted started stopped paused removed)
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        code=0
+        status="$(ComposeLineStatus "$line")" || code=$?
+        [[ "$code" -eq 0 ]] || continue
+        [[ "$status" == "InUse" ]] && continue
+        if [[ "$verb" == "restart" && "$status" == "Started" ]]; then
+            key="restarted"
+        else
+            key="$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')"
+        fi
+        tally["$key"]=$((${tally[$key]:-0}+1))
+    done < <(tr '\r' '\n' < "$file")
+    local joined=""
+    for key in "${order[@]}"; do
+        n="${tally[$key]:-0}"
+        [[ "$n" -gt 0 ]] || continue
+        if [[ -z "$joined" ]]; then
+            joined="$n $key"
+        else
+            joined="$joined, $n $key"
+        fi
+    done
+    if [[ -z "$joined" ]]; then
+        printf '%s' "done"
+        return 0
+    fi
+    printf '%s' "$joined"
+}
+
 RunOneCompose() {
     local file="$1"
     shift
     "${DockerCmd[@]}" --file "$file" --env-file "$envFile" "$@"
 }
 
+RunComposeBrief() {
+    local index="$1"
+    local total="$2"
+    local name="$3"
+    local file="$4"
+    shift 4
+    local verb="${1:-}"
+    local outfile pid start now status=0 shown_live=0 spin='|/-\' tick=0
+    local label
+
+    BRIEF_KIND=changed
+    outfile="$(mktemp)" || {
+        RunOneCompose "$file" "$@"
+        return
+    }
+    RunOneCompose "$file" "$@" >"$outfile" 2>&1 &
+    pid=$!
+    start=$(date +%s)
+    while kill -0 "$pid" 2>/dev/null; do
+        now=$(date +%s)
+        if [[ $((now - start)) -ge 3 ]]; then
+            printf "\r\033[K%b── %s ──%b\n" "$c_yellow" "$name" "$c_reset"
+            if tail --pid="$pid" -n +1 -f "$outfile" 2>/dev/null; then
+                shown_live=1
+            fi
+            break
+        fi
+        if [[ -t 1 ]]; then
+            tick=$(( (tick + 1) % 4 ))
+            printf "\r  %b%s%b  %3d/%-3d  %s" "$c_teal" "${spin:tick:1}" "$c_reset" "$index" "$total" "$name"
+        fi
+        sleep 0.05
+    done
+    if [[ "$shown_live" -eq 0 && -t 1 ]]; then
+        printf "\r\033[K"
+    fi
+    wait "$pid" || status=$?
+    if [[ "$status" -ne 0 ]]; then
+        BRIEF_KIND=failed
+        printf "  %b✘%b  %3d/%-3d  %s\n" "$c_red" "$c_reset" "$index" "$total" "$name"
+        [[ "$shown_live" -eq 1 ]] || cat "$outfile"
+        rm -f "$outfile"
+        return "$status"
+    fi
+    if [[ "$shown_live" -eq 0 ]] && ComposeOutputSteady "$verb" "$outfile"; then
+        BRIEF_KIND=steady
+        label="$(ComposeSteadyLabel "$verb" "$outfile")"
+        printf "  %b✔%b  %b%3d/%-3d%b  %-24s %b%s%b\n" \
+            "$c_green" "$c_reset" "$c_dim" "$index" "$total" "$c_reset" "$name" "$c_dim" "$label" "$c_reset"
+        rm -f "$outfile"
+        return 0
+    fi
+    BRIEF_KIND=changed
+    if [[ "$shown_live" -eq 0 ]]; then
+        printf "  %b↑%b  %3d/%-3d  %s\n" "$c_yellow" "$c_reset" "$index" "$total" "$name"
+        cat "$outfile"
+    fi
+    rm -f "$outfile"
+    return 0
+}
+
 RunServices() {
     local service="$1"
     shift
+    local verb="${1:-}"
+    local pretty=0
     local dir path failed=0 ran=0 had_nullglob=0
+    local -a names=()
+    local index=0 unchanged=0 changed=0 failed_color
+    case "$verb" in
+        up|start|stop|restart|pause|unpause|down) pretty=1 ;;
+    esac
 
     if [[ -z "$service" || "$service" == "all" ]]; then
         if [[ -z "$service" ]]; then
@@ -563,19 +736,41 @@ RunServices() {
         shopt -s nullglob
         for dir in "$APPS"/*/; do
             [[ -f "${dir}${COMPOSE_FILE}" ]] || continue
-            path="$(basename "$dir")"
-            printf "%s\n" "--- Performing actions for $path ---"
-            ran=1
-            if ! RunOneCompose "${dir}${COMPOSE_FILE}" "$@"; then
-                failed=$((failed+1))
-            fi
+            names+=("$(basename "$dir")")
         done
         if [[ "$had_nullglob" -eq 0 ]]; then
             shopt -u nullglob
         fi
-        if [[ "$ran" -eq 0 ]]; then
+        if [[ ${#names[@]} -eq 0 ]]; then
             echo "No enabled services found."
             return
+        fi
+        for path in "${names[@]}"; do
+            index=$((index+1))
+            ran=1
+            if [[ "$pretty" -eq 1 ]]; then
+                if RunComposeBrief "$index" "${#names[@]}" "$path" "$APPS/$path/$COMPOSE_FILE" "$@"; then
+                    if [[ "$BRIEF_KIND" == "steady" ]]; then
+                        unchanged=$((unchanged+1))
+                    else
+                        changed=$((changed+1))
+                    fi
+                else
+                    failed=$((failed+1))
+                fi
+            else
+                printf "%b── %s ──%b\n" "$c_blue" "$path" "$c_reset"
+                if ! RunOneCompose "$APPS/$path/$COMPOSE_FILE" "$@"; then
+                    failed=$((failed+1))
+                fi
+            fi
+        done
+        if [[ "$pretty" -eq 1 && "$ran" -eq 1 ]]; then
+            failed_color="$c_dim"
+            [[ "$failed" -gt 0 ]] && failed_color="$c_red"
+            printf "%b──%b %d unchanged %b·%b %d changed %b·%b %b%d failed%b\n" \
+                "$c_teal" "$c_reset" "$unchanged" "$c_dim" "$c_reset" "$changed" \
+                "$c_dim" "$c_reset" "$failed_color" "$failed" "$c_reset"
         fi
         [[ "$failed" -eq 0 ]] || exit 1
         return
@@ -586,7 +781,7 @@ RunServices() {
         exit 1
     fi
     if [[ -f "$APPS/$service/$COMPOSE_FILE" ]]; then
-        printf "%s\n" "--- Performing actions for $service ---"
+        printf "%b── %s ──%b\n" "$c_blue" "$service" "$c_reset"
         RunOneCompose "$APPS/$service/$COMPOSE_FILE" "$@" || exit 1
         return
     fi
