@@ -52,6 +52,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.19 enabled services list above disabled ones
 ### 1.7.18 edit opens the editor on the terminal
 ### 1.7.17 issue lists containers that need attention
 ### 1.7.16 ps keeps blank ports from moving the service name

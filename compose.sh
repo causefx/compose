@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.18
-### ChangeNotes: edit opens the editor on the terminal.
+VERSION=v1.7.19
+### ChangeNotes: enabled services list above disabled ones.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -499,7 +499,7 @@ Update() {
 
 List() {
     local dir path status width enabled_count=0 disabled_count=0 i
-    local -a row_name=() row_mark=() row_color=() row_status=()
+    local -a en_name=() en_status=() dis_name=() dis_status=()
     Banner "list"
     LoadProjectStatus
     while IFS= read -r dir; do
@@ -509,33 +509,39 @@ List() {
             status="no container"
         fi
         if [ -f "$dir/$COMPOSE_FILE" ]; then
-            row_name+=("$path")
-            row_mark+=("✔")
-            row_color+=("$c_green")
-            row_status+=("$status")
+            en_name+=("$path")
+            en_status+=("$status")
             enabled_count=$((enabled_count+1))
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
-            row_name+=("$path")
-            row_mark+=("✘")
-            row_color+=("$c_red")
-            row_status+=("$status")
+            dis_name+=("$path")
+            dis_status+=("$status")
             disabled_count=$((disabled_count+1))
         fi
     done < <(ServiceDirs)
-    if [[ ${#row_name[@]} -eq 0 ]]; then
+    if [[ ${#en_name[@]} -eq 0 && ${#dis_name[@]} -eq 0 ]]; then
         Say info "No services."
         return
     fi
-    width="$(ColumnWidth 7 "${row_name[@]}")"
+    width="$(ColumnWidth 7 "${en_name[@]}" "${dis_name[@]}")"
     printf "%b     %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "containers" "$c_reset"
-    for i in "${!row_name[@]}"; do
+    for i in "${!en_name[@]}"; do
         printf "  %b%s%b  %s  %b│%b  %s\n" \
-            "${row_color[$i]}" "${row_mark[$i]}" "$c_reset" \
-            "$(PadRight "${row_name[$i]}" "$width")" \
+            "$c_green" "✔" "$c_reset" \
+            "$(PadRight "${en_name[$i]}" "$width")" \
             "$c_dim" "$c_reset" \
-            "$(PaintStatus "${row_status[$i]}")"
+            "$(PaintStatus "${en_status[$i]}")"
     done
+    if [[ ${#dis_name[@]} -gt 0 ]]; then
+        [[ ${#en_name[@]} -gt 0 ]] && printf "\n  %bdisabled%b\n" "$c_dim" "$c_reset"
+        for i in "${!dis_name[@]}"; do
+            printf "  %b%s%b  %s  %b│%b  %s\n" \
+                "$c_red" "✘" "$c_reset" \
+                "$(PadRight "${dis_name[$i]}" "$width")" \
+                "$c_dim" "$c_reset" \
+                "$(PaintStatus "${dis_status[$i]}")"
+        done
+    fi
     printf "\n"
     Say info "$enabled_count enabled · $disabled_count disabled"
 }
@@ -1838,6 +1844,27 @@ PrintMissingTags() {
     fi
 }
 
+PrintImageRow() {
+    local state="$1" path="$2" path_w="$3" tag="$4" tag_w="$5" img="$6"
+    local mark color tag_color
+    if [[ "$state" == "Enabled" ]]; then
+        mark="✔"
+        color="$c_green"
+    else
+        mark="✘"
+        color="$c_red"
+    fi
+    tag_color="$c_dim"
+    [[ "$tag" == "-" ]] && tag_color="$c_yellow"
+    printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+        "$color" "$mark" "$c_reset" \
+        "$(PadRight "$path" "$path_w")" \
+        "$c_dim" "$c_reset" \
+        "$tag_color" "$(PadRight "$tag" "$tag_w")" "$c_reset" \
+        "$c_dim" "$c_reset" \
+        "$img"
+}
+
 ShowImages() {
     local mode="$1"
     local -a pull_refs=()
@@ -1856,7 +1883,7 @@ ShowImages() {
     local total=0
     local dir path path_lc state file img tag row_key
     local -a disp_path=() disp_state=() disp_tag=() disp_img=()
-    local prev="" mark color tag_color tag_width i
+    local tag_width i
     local answer img_ref include_disabled=0 pull_enabled=0
 
     if [ -n "$folder" ] && [ "$folder" != "all" ]; then
@@ -1924,27 +1951,27 @@ ShowImages() {
 
     if [[ "$count" -gt 0 ]]; then
         local svc_width
+        local -a en_idx=() dis_idx=()
+        local idx
         svc_width="$(ColumnWidth 7 "${disp_path[@]}")"
         tag_width="$(ColumnWidth 3 "${disp_tag[@]}")"
         printf "%b     %s  │  %s  │  %s%b\n" "$c_dim" \
             "$(PadRight "service" "$svc_width")" "$(PadRight "tag" "$tag_width")" "image" "$c_reset"
         for i in "${!disp_path[@]}"; do
             if [[ "${disp_state[$i]}" == "Enabled" ]]; then
-                mark="✔"
-                color="$c_green"
+                en_idx+=("$i")
             else
-                mark="✘"
-                color="$c_red"
+                dis_idx+=("$i")
             fi
-            tag_color="$c_dim"
-            [[ "${disp_tag[$i]}" == "-" ]] && tag_color="$c_yellow"
-            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
-                "$color" "$mark" "$c_reset" \
-                "$(PadRight "${disp_path[$i]}" "$svc_width")" \
-                "$c_dim" "$c_reset" \
-                "$tag_color" "$(PadRight "${disp_tag[$i]}" "$tag_width")" "$c_reset" \
-                "$c_dim" "$c_reset" \
-                "${disp_img[$i]}"
+        done
+        for idx in "${en_idx[@]}"; do
+            PrintImageRow "${disp_state[$idx]}" "${disp_path[$idx]}" "$svc_width" "${disp_tag[$idx]}" "$tag_width" "${disp_img[$idx]}"
+        done
+        if [[ ${#en_idx[@]} -gt 0 && ${#dis_idx[@]} -gt 0 ]]; then
+            printf "\n  %bdisabled%b\n" "$c_dim" "$c_reset"
+        fi
+        for idx in "${dis_idx[@]}"; do
+            PrintImageRow "${disp_state[$idx]}" "${disp_path[$idx]}" "$svc_width" "${disp_tag[$idx]}" "$tag_width" "${disp_img[$idx]}"
         done
     fi
 
