@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.16
-### ChangeNotes: ps keeps blank ports from moving the service name.
+VERSION=v1.7.17
+### ChangeNotes: issue lists containers that need attention.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -13,6 +13,7 @@ LATEST_CHANGES=""
 EXTRA_ARGS=()
 declare -A PROJECT_STATUS=()
 PROJECT_STATUS_LOADED=0
+declare -a CTR_SVC=() CTR_NAME=() CTR_STATUS=() CTR_PORTS=()
 
 ### Colors:
 c_red="\033[0;31m"
@@ -114,6 +115,7 @@ enable|Enable service(s)|enable
 disable|Disable service(s)|disable
 list|List service(s)|list
 ps|Show container(s)|ps
+issue|Show containers that need attention|issue
 logs|Show service logs|logs
 images|List compose images and tags|images
 pull|Pull images and skip ones already current|pull
@@ -316,6 +318,7 @@ CheckAction() {
                 ;;
             list) List ;;
             ps) Ps ;;
+            issue) Issue ;;
             images) ShowImages list ;;
             pull) ShowImages pull ;;
             create)
@@ -882,6 +885,248 @@ RunServices() {
     exit 1
 }
 
+JoinRecords() {
+    local sep="$1"
+    local line="" extra="" count=0
+    while true; do
+        line=""
+        IFS= read -r line || [[ -n "$line" ]] || break
+        count=0
+        extra="$line"
+        while [[ "$extra" == *"$sep"* ]]; do
+            extra="${extra#*"$sep"}"
+            count=$((count + 1))
+        done
+        while [[ "$count" -lt 3 ]]; do
+            extra=""
+            IFS= read -r extra || [[ -n "$extra" ]] || break
+            line+=" $extra"
+            while [[ "$extra" == *"$sep"* ]]; do
+                extra="${extra#*"$sep"}"
+                count=$((count + 1))
+            done
+        done
+        printf '%s\n' "$line"
+    done
+}
+
+LoadContainers() {
+    local cname cstatus cports project service
+    local -a raw=() ordered=()
+    local sep=$'\x1e' line
+    local fmt="{{.Names}}${sep}{{.Status}}${sep}{{.Ports}}${sep}{{.Label \"com.docker.compose.project\"}}"
+    local want=""
+
+    CTR_SVC=()
+    CTR_NAME=()
+    CTR_STATUS=()
+    CTR_PORTS=()
+    if [[ -n "${folder:-}" && "$folder" != "all" ]]; then
+        want="${folder,,}"
+    fi
+    if ! docker ps -a --format "$fmt" >/dev/null 2>&1; then
+        Say bad "docker ps failed."
+        return 1
+    fi
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        raw+=("$line")
+    done < <(docker ps -a --format "$fmt" | JoinRecords "$sep")
+
+    for line in "${raw[@]}"; do
+        IFS=$sep read -r cname cstatus cports project <<< "$line"
+        [[ -z "$cname" ]] && continue
+        service="${project:-"-"}"
+        if [[ -n "$want" && "${service,,}" != "$want" ]]; then
+            continue
+        fi
+        ordered+=("${service}${sep}${cname}${sep}${cstatus}${sep}$(ShortenPorts "$cports")")
+    done
+    if [[ ${#ordered[@]} -eq 0 ]]; then
+        return 0
+    fi
+    while IFS=$sep read -r service cname cstatus cports; do
+        [[ -z "$cname" ]] && continue
+        CTR_SVC+=("$service")
+        CTR_NAME+=("$cname")
+        CTR_STATUS+=("$cstatus")
+        CTR_PORTS+=("$cports")
+    done < <(printf '%s\n' "${ordered[@]}" | sort -t "$sep" -k1,1 -k2,2)
+}
+
+OneLine() {
+    local s="$1"
+    s="${s//$'\r'/ }"
+    s="${s//$'\n'/ }"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    while [[ "$s" == *"  "* ]]; do
+        s="${s//  / }"
+    done
+    if (( ${#s} > 160 )); then
+        s="${s:0:157}..."
+    fi
+    printf '%s' "$s"
+}
+
+CleanError() {
+    local s="$1"
+    [[ -z "$s" || "$s" == '""' || "$s" == "null" ]] && return 0
+    s="${s#\"}"
+    s="${s%\"}"
+    s="${s//\\n/ }"
+    s="${s//\\r/ }"
+    s="${s//\\\"/}"
+    s="${s//\\\\/\\}"
+    OneLine "$s"
+}
+
+ClassifyStatus() {
+    local low
+    low="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    case "$low" in
+        *restarting*) printf '%s' restarting ;;
+        *dead*) printf '%s' dead ;;
+        *unhealthy*) printf '%s' unhealthy ;;
+        created*) printf '%s' created ;;
+        exited\ \(0\)*|exited\ \(143\)*) ;;
+        exited\ *) printf '%s' exited ;;
+    esac
+}
+
+KeepIssue() {
+    local kind="$1" oom="$2" restarts="$3" code="$4"
+    [[ -n "$kind" ]] || return 1
+    if [[ "$kind" == "exited" && "$code" == "137" && "$oom" != "true" ]]; then
+        if [[ ! "$restarts" =~ ^[0-9]+$ || "$restarts" -eq 0 ]]; then
+            return 1
+        fi
+    fi
+    return 0
+}
+
+IssueHint() {
+    local kind="$1" oom="$2" restarts="$3" code="$4" error="$5" policy="$6"
+    local hint=""
+    case "$kind" in
+        unhealthy)
+            hint="Health check is failing."
+            ;;
+        restarting)
+            if [[ "$oom" == "true" ]]; then
+                hint="Restarting because it ran out of memory."
+            elif [[ "$restarts" =~ ^[0-9]+$ && "$restarts" -gt 1 && "$code" =~ ^[0-9]+$ ]]; then
+                hint="Restarting after exit ${code}. Docker has restarted it ${restarts} times."
+            elif [[ "$restarts" =~ ^[0-9]+$ && "$restarts" -gt 1 ]]; then
+                hint="Restarting. Docker has restarted it ${restarts} times."
+            elif [[ "$code" =~ ^[0-9]+$ ]]; then
+                hint="Restarting after exit ${code}."
+            else
+                hint="Restarting."
+            fi
+            ;;
+        exited)
+            if [[ "$oom" == "true" ]]; then
+                hint="It ran out of memory."
+            elif [[ "$policy" == "on-failure" && "$restarts" =~ ^[0-9]+$ && "$restarts" -gt 0 ]]; then
+                hint="Docker stopped trying after ${restarts} restarts."
+            elif [[ "$code" == "137" && "$restarts" =~ ^[0-9]+$ && "$restarts" -gt 0 ]]; then
+                hint="It was killed (exit 137) after ${restarts} restarts."
+            elif [[ "$code" == "137" ]]; then
+                hint="It was killed (exit 137)."
+            elif [[ "$code" =~ ^[0-9]+$ && "$restarts" =~ ^[0-9]+$ && "$restarts" -gt 1 ]]; then
+                hint="It exited with code ${code} after ${restarts} restarts."
+            elif [[ "$code" =~ ^[0-9]+$ ]]; then
+                hint="It exited with code ${code}."
+            else
+                hint="It exited with a failure code."
+            fi
+            ;;
+        dead)
+            hint="Docker marked this container dead."
+            ;;
+        created)
+            hint="Created and never started."
+            ;;
+    esac
+    if [[ -n "$error" ]]; then
+        hint="${hint} ${error}"
+    fi
+    printf '%s' "$hint"
+}
+
+IssueCommands() {
+    local kind="$1" service="$2" cname="$3"
+    local who logs_cmd start_cmd
+    if [[ -z "$service" || "$service" == "-" ]]; then
+        who="$(printf '%q' "$cname")"
+        logs_cmd="docker logs ${who} --tail 80"
+        start_cmd="docker start ${who}"
+        case "$kind" in
+            unhealthy|restarting) printf '%s\n' "$logs_cmd" ;;
+            exited) printf '%s\n' "$logs_cmd" "$start_cmd" ;;
+            dead) printf '%s\n' "docker rm -f ${who}" ;;
+            created) printf '%s\n' "$start_cmd" ;;
+        esac
+        return 0
+    fi
+    who="$(printf '%q' "$service")"
+    logs_cmd="dc logs ${who} -- --tail 80"
+    start_cmd="dc start ${who}"
+    case "$kind" in
+        unhealthy|restarting) printf '%s\n' "$logs_cmd" ;;
+        exited) printf '%s\n' "$logs_cmd" "$start_cmd" ;;
+        dead) printf '%s\n' "dc up ${who}" ;;
+        created) printf '%s\n' "$start_cmd" ;;
+    esac
+}
+
+ReadInspect() {
+    local name="$1"
+    local sep=$'\x1e'
+    local fmt="{{.State.OOMKilled}}${sep}{{.RestartCount}}${sep}{{.State.ExitCode}}${sep}{{json .State.Error}}${sep}{{.HostConfig.RestartPolicy.Name}}"
+    docker inspect --format "$fmt" "$name" 2>/dev/null || true
+}
+
+LastHealthLine() {
+    local name="$1"
+    local sep=$'\x1e' blob="" part="" last=""
+    local fmt="{{if .State.Health}}{{range .State.Health.Log}}{{.Output}}${sep}{{end}}{{end}}"
+    blob="$(docker inspect --format "$fmt" "$name" 2>/dev/null || true)"
+    [[ -n "$blob" ]] || return 0
+    while [[ "$blob" == *"$sep"* ]]; do
+        part="${blob%%"$sep"*}"
+        blob="${blob#*"$sep"}"
+        [[ -n "${part//[[:space:]]/}" ]] && last="$part"
+    done
+    [[ -n "${blob//[[:space:]]/}" ]] && last="$blob"
+    [[ -n "$last" ]] || return 0
+    OneLine "$last"
+}
+
+PrintLogTail() {
+    local name="$1"
+    local -a kept=()
+    local line i start
+    while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        line="$(printf '%s' "$line" | sed -E $'s/\x1B\\[[0-9;]*[[:alpha:]]//g')"
+        [[ -z "${line//[[:space:]]/}" ]] && continue
+        if (( ${#line} > 140 )); then
+            line="${line:0:137}..."
+        fi
+        kept+=("$line")
+    done < <(docker logs --tail 30 "$name" 2>&1 || true)
+    [[ ${#kept[@]} -eq 0 ]] && return 0
+    start=0
+    if (( ${#kept[@]} > 6 )); then
+        start=$(( ${#kept[@]} - 6 ))
+    fi
+    for (( i=start; i<${#kept[@]}; i++ )); do
+        printf "       %b%s%b\n" "$c_dim" "${kept[$i]}" "$c_reset"
+    done
+}
+
 ShortenPorts() {
     local raw="$1"
     local part left right short seen=" " out=""
@@ -917,12 +1162,8 @@ ShortenPorts() {
 }
 
 Ps() {
-    local cname cstatus cports project service low
-    local -a row_svc=() row_name=() row_status=() row_ports=()
-    local -a raw=() ordered=()
-    local svc_w name_w status_w i ports_text mark color
-    local sep=$'\x1e' line extra count
-    local fmt="{{.Names}}${sep}{{.Status}}${sep}{{.Ports}}${sep}{{.Label \"com.docker.compose.project\"}}"
+    local low i ports_text mark color
+    local svc_w name_w status_w
     local want="" have_dir=0
 
     Banner "ps"
@@ -934,48 +1175,8 @@ Ps() {
         want="${folder,,}"
         [[ -d "$APPS/$folder" ]] && have_dir=1
     fi
-    if ! docker ps -a --format "$fmt" >/dev/null 2>&1; then
-        Say bad "docker ps failed."
-        return 1
-    fi
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        count=0
-        extra="$line"
-        while [[ "$extra" == *"$sep"* ]]; do
-            extra="${extra#*"$sep"}"
-            count=$((count+1))
-        done
-        while [[ "$count" -lt 3 ]]; do
-            IFS= read -r extra || break
-            line+=" $extra"
-            while [[ "$extra" == *"$sep"* ]]; do
-                extra="${extra#*"$sep"}"
-                count=$((count+1))
-            done
-        done
-        raw+=("$line")
-    done < <(docker ps -a --format "$fmt")
-
-    for line in "${raw[@]}"; do
-        IFS=$sep read -r cname cstatus cports project <<< "$line"
-        [[ -z "$cname" ]] && continue
-        service="${project:-"-"}"
-        if [[ -n "$want" && "${service,,}" != "$want" ]]; then
-            continue
-        fi
-        ordered+=("${service}${sep}${cname}${sep}${cstatus}${sep}$(ShortenPorts "$cports")")
-    done
-    if [[ ${#ordered[@]} -gt 0 ]]; then
-        while IFS=$sep read -r service cname cstatus cports; do
-            [[ -z "$cname" ]] && continue
-            row_svc+=("$service")
-            row_name+=("$cname")
-            row_status+=("$cstatus")
-            row_ports+=("$cports")
-        done < <(printf '%s\n' "${ordered[@]}" | sort -t "$sep" -k1,1 -k2,2)
-    fi
-
-    if [[ ${#row_name[@]} -eq 0 ]]; then
+    LoadContainers || return 1
+    if [[ ${#CTR_NAME[@]} -eq 0 ]]; then
         if [[ -n "$want" && "$have_dir" -eq 0 ]]; then
             Say bad "Service does not exist."
             exit 1
@@ -983,34 +1184,115 @@ Ps() {
         Say info "No containers."
         return 0
     fi
-    svc_w="$(ColumnWidth 7 "${row_svc[@]}")"
-    name_w="$(ColumnWidth 4 "${row_name[@]}")"
-    status_w="$(ColumnWidth 6 "${row_status[@]}")"
+    svc_w="$(ColumnWidth 7 "${CTR_SVC[@]}")"
+    name_w="$(ColumnWidth 4 "${CTR_NAME[@]}")"
+    status_w="$(ColumnWidth 6 "${CTR_STATUS[@]}")"
     printf "%b       %s  │  %s  │  %s  │  %s%b\n" "$c_dim" \
         "$(PadRight "service" "$svc_w")" "$(PadRight "name" "$name_w")" \
         "$(PadRight "status" "$status_w")" "ports" "$c_reset"
-    for i in "${!row_name[@]}"; do
-        low="$(printf '%s' "${row_status[$i]}" | tr '[:upper:]' '[:lower:]')"
+    for i in "${!CTR_NAME[@]}"; do
+        low="$(printf '%s' "${CTR_STATUS[$i]}" | tr '[:upper:]' '[:lower:]')"
         case "$low" in
             *restarting*|*unhealthy*) mark="·"; color="$c_yellow" ;;
             up\ *|*healthy*) mark="✔"; color="$c_green" ;;
             *exited*|*dead*) mark="✘"; color="$c_red" ;;
             *) mark="·"; color="$c_yellow" ;;
         esac
-        ports_text="${row_ports[$i]}"
+        ports_text="${CTR_PORTS[$i]}"
         [[ -z "$ports_text" ]] && ports_text="-"
         printf "  %b%s%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s\n" \
             "$color" "$mark" "$c_reset" \
-            "$(PadRight "${row_svc[$i]}" "$svc_w")" \
+            "$(PadRight "${CTR_SVC[$i]}" "$svc_w")" \
             "$c_dim" "$c_reset" \
-            "$(PadRight "${row_name[$i]}" "$name_w")" \
+            "$(PadRight "${CTR_NAME[$i]}" "$name_w")" \
             "$c_dim" "$c_reset" \
-            "$(PaintStatus "$(PadRight "${row_status[$i]}" "$status_w")")" \
+            "$(PaintStatus "$(PadRight "${CTR_STATUS[$i]}" "$status_w")")" \
             "$c_dim" "$c_reset" \
             "$ports_text"
     done
     printf "\n"
-    Say info "${#row_name[@]} container(s)."
+    Say info "${#CTR_NAME[@]} container(s)."
+}
+
+Issue() {
+    local want="" have_dir=0
+    local i kind hint health cmd title mark color low
+    local oom restarts code error policy blob
+    local sep=$'\x1e'
+    local problems=0
+
+    Banner "issue"
+    if [[ -n "$folder" && "$folder" != "all" ]]; then
+        want="${folder,,}"
+        [[ -d "$APPS/$folder" ]] && have_dir=1
+    fi
+    LoadContainers || return 1
+    if [[ ${#CTR_NAME[@]} -eq 0 && -n "$want" && "$have_dir" -eq 0 ]]; then
+        Say bad "Service does not exist."
+        exit 1
+    fi
+
+    for i in "${!CTR_NAME[@]}"; do
+        kind="$(ClassifyStatus "${CTR_STATUS[$i]}")"
+        [[ -n "$kind" ]] || continue
+        low="$(printf '%s' "${CTR_STATUS[$i]}" | tr '[:upper:]' '[:lower:]')"
+        oom="" restarts="" code="" error="" policy=""
+        blob="$(ReadInspect "${CTR_NAME[$i]}")"
+        if [[ -n "$blob" ]]; then
+            IFS=$sep read -r oom restarts code error policy <<< "$blob"
+            error="$(CleanError "$error")"
+        fi
+        if [[ "$kind" == "restarting" || "$kind" == "exited" ]]; then
+            if [[ ! "$code" =~ ^[0-9]+$ && "$low" =~ \(([0-9]+)\) ]]; then
+                code="${BASH_REMATCH[1]}"
+            fi
+        fi
+        KeepIssue "$kind" "$oom" "$restarts" "$code" || continue
+
+        if [[ "$problems" -gt 0 ]]; then
+            printf "\n"
+        fi
+        problems=$((problems + 1))
+        case "$kind" in
+            exited|dead) mark="✘"; color="$c_red" ;;
+            *) mark="!"; color="$c_yellow" ;;
+        esac
+        hint="$(IssueHint "$kind" "$oom" "$restarts" "$code" "$error" "$policy")"
+        if [[ "$kind" == "unhealthy" ]]; then
+            health="$(LastHealthLine "${CTR_NAME[$i]}")"
+            if [[ -n "$health" ]]; then
+                hint="Health check is failing: $health"
+                [[ -n "$error" ]] && hint+=" $error"
+            fi
+        fi
+        if [[ "${CTR_SVC[$i]}" == "-" ]]; then
+            title="${CTR_NAME[$i]}"
+        else
+            title="${CTR_SVC[$i]}"
+        fi
+        printf "  %b%s%b  %s\n" "$color" "$mark" "$c_reset" "$title"
+        if [[ "$title" != "${CTR_NAME[$i]}" ]]; then
+            printf "     %b%s%b  %b·%b  %s\n" "$c_dim" "${CTR_NAME[$i]}" "$c_reset" \
+                "$c_dim" "$c_reset" "$(PaintStatus "${CTR_STATUS[$i]}")"
+        else
+            printf "     %s\n" "$(PaintStatus "${CTR_STATUS[$i]}")"
+        fi
+        printf "     %s\n" "$hint"
+        while IFS= read -r cmd; do
+            [[ -z "$cmd" ]] && continue
+            printf "     %b%s%b\n" "$c_teal" "$cmd" "$c_reset"
+        done < <(IssueCommands "$kind" "${CTR_SVC[$i]}" "${CTR_NAME[$i]}")
+        if [[ "$kind" != "created" ]]; then
+            PrintLogTail "${CTR_NAME[$i]}"
+        fi
+    done
+
+    if [[ "$problems" -eq 0 ]]; then
+        Say ok "No issues."
+        return 0
+    fi
+    printf "\n"
+    Say warn "${problems} container(s) need attention."
 }
 
 Logs() {
