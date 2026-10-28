@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.19
-### ChangeNotes: enabled services list above disabled ones.
+VERSION=v1.7.21
+### ChangeNotes: cp copies files and prune removes unused Docker data.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -103,6 +103,7 @@ PadRight() {
 ActionSpec() {
     cat <<'EOF'
 # @actions
+# @group Run
 up|Create and start containers|compose|up -d
 down|Stop and remove containers, networks|compose|down
 start|Start service(s)|compose|start
@@ -111,23 +112,32 @@ restart|Restart service container(s)|compose|restart
 build|Build service image(s)|compose|build
 pause|Pause service(s)|compose|pause
 unpause|Unpause service(s)|compose|unpause
-enable|Enable service(s)|enable
-disable|Disable service(s)|disable
+exec|Run a command in a service|exec
+cp|Copy files to or from a service|cp
+# @group Check
 list|List service(s)|list
 ps|Show container(s)|ps
 issue|Show containers that need attention|issue
 logs|Show service logs|logs
+top|Show processes in a container|compose|top
+stats|Show CPU, memory, and network|stats
 images|List compose images and tags|images
 pull|Pull images and skip ones already current|pull
 config|Render compose file(s)|compose|config
+ports|Show ports from ENV file|ports
+df|Show Docker disk usage|df
+prune|Remove unused Docker data|prune
+# @group Services
+enable|Enable service(s)|enable
+disable|Disable service(s)|disable
 create|Create service|create
 remove|Remove service|remove
+edit|Edit service|edit
+env|Edit env file|env
+# @group Script
 version|Display version|version
 update|Update script when a new version exists|update
 repull|Re-download repo files|repull
-ports|Show ports from ENV file|ports
-edit|Edit service|edit
-env|Edit env file|env
 bashrc|Print the dc.bash source line|bashrc
 help|This help menu|help
 # @end
@@ -143,15 +153,26 @@ EachAction() {
 }
 
 Help() {
-    local name desc handler args
+    local line name desc handler args group
+    local first=1
     Banner "help"
     printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
     printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
-    printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a exec -s plex -- bash\n" "$c_dim" "$c_reset"
     Banner "actions"
-    while IFS='|' read -r name desc handler args; do
+    while IFS= read -r line; do
+        if [[ "$line" == "# @group "* ]]; then
+            group="${line#\# @group }"
+            [[ "$first" -eq 0 ]] && printf "\n"
+            first=0
+            printf "  %b%s%b\n" "$c_dim" "${group^^}" "$c_reset"
+            continue
+        fi
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        IFS='|' read -r name desc handler args <<< "$line"
         printf "  %b%-10s%b  %s\n" "$c_teal" "$name" "$c_reset" "$desc"
-    done < <(EachAction)
+    done < <(ActionSpec)
 }
 
 while getopts "ha:f:s:e:" options; do
@@ -321,6 +342,11 @@ CheckAction() {
             issue) Issue ;;
             images) ShowImages list ;;
             pull) ShowImages pull ;;
+            stats) Stats ;;
+            df) Disk ;;
+            prune) Prune ;;
+            exec) Exec ;;
+            cp) Cp ;;
             create)
                 Banner "create"
                 Create "$folder"
@@ -1299,6 +1325,233 @@ Issue() {
     fi
     printf "\n"
     Say warn "${problems} container(s) need attention."
+}
+
+Stats() {
+    local sep=$'\x1e' line name cpu mem memp net used
+    local -A cpu_of=() mem_of=() memp_of=() net_of=()
+    local -a row_svc=() row_name=() row_cpu=() row_mem=() row_net=()
+    local i svc_w name_w cpu_w mem_w
+    local want="" have_dir=0
+    local fmt="{{.Name}}${sep}{{.CPUPerc}}${sep}{{.MemUsage}}${sep}{{.MemPerc}}${sep}{{.NetIO}}"
+    local stats_file
+
+    local -a running=()
+    local low
+
+    Banner "stats"
+    if [[ -n "$folder" && "$folder" != "all" ]]; then
+        want="${folder,,}"
+        [[ -d "$APPS/$folder" ]] && have_dir=1
+    fi
+    LoadContainers || return 1
+    if [[ ${#CTR_NAME[@]} -eq 0 ]]; then
+        if [[ -n "$want" && "$have_dir" -eq 0 ]]; then
+            Say bad "Service does not exist."
+            exit 1
+        fi
+        Say info "No containers."
+        return 0
+    fi
+    for i in "${!CTR_NAME[@]}"; do
+        low="$(printf '%s' "${CTR_STATUS[$i]}" | tr '[:upper:]' '[:lower:]')"
+        [[ "$low" == up\ * ]] || continue
+        running+=("${CTR_NAME[$i]}")
+    done
+    if [[ ${#running[@]} -eq 0 ]]; then
+        Say info "No running containers."
+        return 0
+    fi
+
+    Say info "Sampling running containers."
+    stats_file="$(mktemp)" || {
+        Say bad "docker stats failed."
+        return 1
+    }
+    if ! docker stats --no-stream --format "$fmt" "${running[@]}" >"$stats_file" 2>"$stats_file.err"; then
+        Say bad "docker stats failed."
+        cat "$stats_file.err" >&2
+        rm -f "$stats_file" "$stats_file.err"
+        return 1
+    fi
+    rm -f "$stats_file.err"
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        IFS=$sep read -r name cpu mem memp net <<< "$line"
+        name="${name#/}"
+        [[ -z "$name" ]] && continue
+        cpu_of["$name"]="$cpu"
+        mem_of["$name"]="$mem"
+        memp_of["$name"]="$memp"
+        net_of["$name"]="$net"
+    done < "$stats_file"
+    rm -f "$stats_file"
+
+    for i in "${!CTR_NAME[@]}"; do
+        name="${CTR_NAME[$i]}"
+        [[ -n "${cpu_of[$name]:-}" ]] || continue
+        used="${mem_of[$name]%% / *}"
+        row_svc+=("${CTR_SVC[$i]}")
+        row_name+=("$name")
+        row_cpu+=("${cpu_of[$name]}")
+        row_mem+=("$used  ${memp_of[$name]}")
+        row_net+=("${net_of[$name]}")
+    done
+    if [[ ${#row_name[@]} -eq 0 ]]; then
+        Say info "No running containers."
+        return 0
+    fi
+    svc_w="$(ColumnWidth 7 "${row_svc[@]}")"
+    name_w="$(ColumnWidth 4 "${row_name[@]}")"
+    cpu_w="$(ColumnWidth 3 "${row_cpu[@]}")"
+    mem_w="$(ColumnWidth 3 "${row_mem[@]}")"
+    printf "%b       %s  │  %s  │  %s  │  %s  │  %s%b\n" "$c_dim" \
+        "$(PadRight "service" "$svc_w")" "$(PadRight "name" "$name_w")" \
+        "$(PadRight "cpu" "$cpu_w")" "$(PadRight "memory" "$mem_w")" "network" "$c_reset"
+    for i in "${!row_name[@]}"; do
+        printf "  %b·%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s\n" \
+            "$c_teal" "$c_reset" \
+            "$(PadRight "${row_svc[$i]}" "$svc_w")" \
+            "$c_dim" "$c_reset" \
+            "$(PadRight "${row_name[$i]}" "$name_w")" \
+            "$c_dim" "$c_reset" \
+            "$(PadRight "${row_cpu[$i]}" "$cpu_w")" \
+            "$c_dim" "$c_reset" \
+            "$(PadRight "${row_mem[$i]}" "$mem_w")" \
+            "$c_dim" "$c_reset" \
+            "${row_net[$i]}"
+    done
+    printf "\n"
+    Say info "${#row_name[@]} running container(s)."
+}
+
+Disk() {
+    Banner "df"
+    if ! docker system df; then
+        Say bad "docker system df failed."
+        return 1
+    fi
+}
+
+Prune() {
+    local answer tried=0 did=0
+    Banner "prune"
+    Say info "This cleans the whole Docker host."
+    if ! docker system df; then
+        Say bad "docker system df failed."
+        return 1
+    fi
+    printf "\n"
+    answer="$(Ask "Remove unused images, build cache, stopped containers, and networks? [y/N]")"
+    if [[ "$answer" == [yY] ]]; then
+        tried=1
+        if docker system prune -a -f; then
+            did=1
+        else
+            Say bad "Image prune failed."
+        fi
+        if docker builder prune -a -f; then
+            did=1
+        else
+            Say warn "Build cache was left in place."
+        fi
+    fi
+    answer="$(Ask "Remove unused volumes? Volumes not attached to a container are deleted. [y/N]")"
+    if [[ "$answer" == [yY] ]]; then
+        tried=1
+        if docker volume prune -f; then
+            did=1
+        else
+            Say bad "Volume prune failed."
+        fi
+    fi
+    if [[ "$tried" -eq 0 ]]; then
+        Say info "Nothing removed."
+        return 0
+    fi
+    if [[ "$did" -eq 1 ]]; then
+        printf "\n"
+        docker system df || true
+    fi
+}
+
+Cp() {
+    local file
+    Banner "cp"
+    if [[ -z "$folder" || "$folder" == "all" ]]; then
+        Say bad "Copy needs a service name."
+        Say info "dc cp plex -- ./file plex:/tmp/file"
+        exit 1
+    fi
+    if [[ ${#EXTRA_ARGS[@]} -lt 2 ]]; then
+        Say bad "Copy needs a source and a destination."
+        Say info "dc cp $folder -- ./file $folder:/tmp/file"
+        exit 1
+    fi
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE"
+    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+        Say warn "Service is disabled."
+        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
+    else
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    RunOneCompose "$file" cp "${EXTRA_ARGS[@]}"
+}
+
+Exec() {
+    local file svc s
+    local -a svcs=()
+    Banner "exec"
+    if [[ -z "$folder" || "$folder" == "all" ]]; then
+        Say bad "Exec needs a service name."
+        exit 1
+    fi
+    if [[ ${#EXTRA_ARGS[@]} -eq 0 ]]; then
+        Say bad "Exec needs a command."
+        Say info "dc exec plex -- bash"
+        exit 1
+    fi
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE"
+    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+        Say warn "Service is disabled."
+        exit 1
+    else
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    while IFS= read -r svc; do
+        [[ -n "$svc" ]] && svcs+=("$svc")
+    done < <("${DockerCmd[@]}" --file "$file" --env-file "$envFile" config --services 2>/dev/null)
+    svc=""
+    for s in "${svcs[@]}"; do
+        if [[ "${s,,}" == "$folder" ]]; then
+            svc="$s"
+            break
+        fi
+    done
+    if [[ -z "$svc" && ${#svcs[@]} -eq 1 ]]; then
+        svc="${svcs[0]}"
+    fi
+    if [[ -z "$svc" && ${#svcs[@]} -eq 0 ]]; then
+        svc="$folder"
+    fi
+    if [[ -z "$svc" ]]; then
+        Say bad "Compose service name is missing."
+        printf '    %s\n' "${svcs[@]}"
+        exit 1
+    fi
+    if [[ -t 0 && -t 1 ]]; then
+        RunOneCompose "$file" exec "$svc" "${EXTRA_ARGS[@]}"
+        return
+    fi
+    if { : </dev/tty >/dev/tty; } 2>/dev/null; then
+        RunOneCompose "$file" exec "$svc" "${EXTRA_ARGS[@]}" </dev/tty >/dev/tty 2>&1
+        return
+    fi
+    RunOneCompose "$file" exec -T "$svc" "${EXTRA_ARGS[@]}"
 }
 
 Logs() {

@@ -26,12 +26,18 @@ dc logs plex --tail 100
 dc ps plex
 dc issue
 dc issue plex
+dc stats
+dc top plex
+dc exec plex -- bash
+dc cp plex -- ./file plex:/tmp/file
+dc df
+dc prune
 dc config plex
 dc images
 dc pull
 ```
 
-`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ. `dc issue` lists containers that are unhealthy, restarting, dead, or exited with a failure. Each one includes why, the next command, and a short log tail. New actions are added in the `ActionSpec` list in `compose.sh`. Help text and `dc` tab completion both read that list. `dc up all` prints one line per service when its containers are already in that state. Compose's own output stays on screen when a container changes, a command fails, or the service takes more than a few seconds.
+`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ. `dc issue` lists containers that are unhealthy, restarting, dead, or exited with a failure. Each one includes why, the next command, and a short log tail. `dc stats` shows CPU, memory, and network for running containers. `dc top plex` shows the processes in one service. `dc exec plex -- bash` runs a command in that service. `dc cp plex -- ./file plex:/tmp/file` copies a file into that service. The name before the colon is the service in the compose file. `dc df` shows Docker disk usage. `dc prune` shows that usage, then asks before it removes unused images and, separately, unused volumes. Help lists actions in Run, Check, Services, and Script. New actions are added in the `ActionSpec` list in `compose.sh`. Help text and `dc` tab completion both read that list. `dc up all` prints one line per service when its containers are already in that state. Compose's own output stays on screen when a container changes, a command fails, or the service takes more than a few seconds.
 
 ### Updates
 
@@ -52,6 +58,8 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.21 cp copies files and prune removes unused Docker data
+### 1.7.20 help groups actions and adds stats, top, exec, and df
 ### 1.7.19 enabled services list above disabled ones
 ### 1.7.18 edit opens the editor on the terminal
 ### 1.7.17 issue lists containers that need attention
