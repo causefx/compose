@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.17
-### ChangeNotes: issue lists containers that need attention.
+VERSION=v1.7.18
+### ChangeNotes: edit opens the editor on the terminal.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1337,12 +1337,30 @@ EditFile() {
     fi
 
     Banner "edit $1"
+    OpenEditor "$file_to_edit"
+}
 
-    if ! command -v nano &> /dev/null; then
-        vim "$file_to_edit"
+OpenEditor() {
+    local file="$1"
+    local editor
+    if command -v nano >/dev/null 2>&1; then
+        editor="nano"
+    elif command -v vim >/dev/null 2>&1; then
+        editor="vim"
     else
-        nano "$file_to_edit"
+        Say bad "nano or vim is required."
+        exit 1
     fi
+    if [[ -t 0 && -t 1 ]]; then
+        "$editor" -- "$file"
+        return
+    fi
+    if { : </dev/tty >/dev/tty; } 2>/dev/null; then
+        "$editor" -- "$file" </dev/tty >/dev/tty 2>&1
+        return
+    fi
+    Say bad "No terminal available for $editor."
+    exit 1
 }
 
 
