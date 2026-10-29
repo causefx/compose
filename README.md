@@ -32,7 +32,7 @@ dc exec plex -- bash
 dc cp plex -- ./file plex:/tmp/file
 dc key
 dc key root@other-host
-dc move plex root@other-host
+dc move plex other-host
 dc df
 dc prune
 dc config plex
@@ -40,7 +40,7 @@ dc images
 dc pull
 ```
 
-`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ. `dc issue` lists containers that are unhealthy, restarting, dead, or exited with a failure. Each one includes why, the next command, and a short log tail. `dc stats` shows CPU, memory, and network for running containers. `dc top plex` shows the processes in one service. `dc exec plex -- bash` runs a command in that service. `dc cp plex -- ./file plex:/tmp/file` copies a file into that service. The name before the colon is the service in the compose file. `dc key` creates an SSH key with an empty passphrase. `dc key root@other-host` asks before it installs that key, then checks that `dc move` can connect. `dc move plex root@other-host` copies that service to a host that has this script. The other host reports its own path. The compose file's variables are added to that host's `.env` when the key is missing. The service lands disabled there and is disabled here. The last question removes the local folder only when you answer yes. `dc df` shows Docker disk usage. `dc prune` shows that usage, then asks before it removes unused images and, separately, unused volumes. Help lists actions in Run, Check, Services, and Script. New actions are added in the `ActionSpec` list in `compose.sh`. Help text and `dc` tab completion both read that list. `dc up all` prints one line per service when its containers are already in that state. Compose's own output stays on screen when a container changes, a command fails, or the service takes more than a few seconds.
+`dc` takes an action, an optional service name, and any extra arguments are passed through to `docker compose`. The first Tab lists actions. The second Tab lists `all` and the service folders from `APPS` in `.env`. `dc logs plex -f` follows one service. Follow is refused when no service is named, because that would block on the first service. `dc pull` skips an image when its local digest matches the registry index or the platform manifest, and pulls the ones that differ. `dc issue` lists containers that are unhealthy, restarting, dead, or exited with a failure. Each one includes why, the next command, and a short log tail. `dc stats` shows CPU, memory, and network for running containers. `dc top plex` shows the processes in one service. `dc exec plex -- bash` runs a command in that service. `dc cp plex -- ./file plex:/tmp/file` copies a file into that service. The name before the colon is the service in the compose file. `dc key` creates an SSH key with an empty passphrase. `dc key root@other-host` asks before it installs that key, remembers `other-host` as that user, then checks that `dc move` can connect. `dc move plex other-host` uses the saved user. `dc move plex root@other-host` copies that service to a host that has this script. The other host reports its own path. The compose file's variables are added to that host's `.env` when the key is missing. The service lands disabled there and is disabled here. The last question removes the local folder only when you answer yes. `dc df` shows Docker disk usage. `dc prune` shows that usage, then asks before it removes unused images and, separately, unused volumes. Help lists actions in Run, Check, Services, and Script. New actions are added in the `ActionSpec` list in `compose.sh`. Help text and `dc` tab completion both read that list. `dc up all` prints one line per service when its containers are already in that state. Compose's own output stays on screen when a container changes, a command fails, or the service takes more than a few seconds.
 
 ### Updates
 
@@ -61,6 +61,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.30 key remembers a short host name for move
 ### 1.7.29 bashrc adds its source line when you say yes
 ### 1.7.28 receive keeps the move stream away from docker
 ### 1.7.27 move accepts the other host's script folder

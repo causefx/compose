@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.29
-### ChangeNotes: bashrc adds its source line when you say yes.
+VERSION=v1.7.30
+### ChangeNotes: key remembers a short host name for move.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1709,6 +1709,134 @@ MoveHostOk() {
     [[ "$host" =~ ^[A-Za-z0-9._+-]+(@[A-Za-z0-9._-]+)?$ ]]
 }
 
+SshConfigUser() {
+    local name="$1" file="$HOME/.ssh/config"
+    local line matched=0 user="" token
+    local -a tokens=()
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" ]] && continue
+        if [[ "$line" =~ ^[Hh][Oo][Ss][Tt][[:space:]]+(.+)$ ]]; then
+            if [[ "$matched" -eq 1 && -n "$user" ]]; then
+                printf '%s\n' "$user"
+                return 0
+            fi
+            matched=0
+            user=""
+            read -ra tokens <<< "${BASH_REMATCH[1]}"
+            for token in "${tokens[@]}"; do
+                [[ "$token" == "$name" ]] && matched=1
+            done
+            continue
+        fi
+        if [[ "$matched" -eq 1 && "$line" =~ ^[Uu][Ss][Ee][Rr][[:space:]]+([^[:space:]]+) ]]; then
+            user="${BASH_REMATCH[1]}"
+        fi
+    done < "$file"
+    if [[ "$matched" -eq 1 && -n "$user" ]]; then
+        printf '%s\n' "$user"
+    fi
+}
+
+ResolveHost() {
+    local name="$1" file="$HOME/.ssh/compose-hosts" short user saved=""
+    if [[ "$name" == *@* ]]; then
+        printf '%s\n' "$name"
+        return 0
+    fi
+    if [[ -f "$file" ]]; then
+        while read -r short user; do
+            if [[ "$short" == "$name" && -n "$user" ]]; then
+                printf '%s@%s\n' "$user" "$name"
+                return 0
+            fi
+        done < "$file"
+    fi
+    saved="$(SshConfigUser "$name")"
+    if [[ -n "$saved" ]]; then
+        printf '%s@%s\n' "$saved" "$name"
+    else
+        printf '%s\n' "$name"
+    fi
+}
+
+WriteSshHostBlock() {
+    local config="$HOME/.ssh/config" hosts="$HOME/.ssh/compose-hosts" tmp line inside=0 name user
+    tmp="$(mktemp)" || return 1
+    if [[ -f "$config" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ "$line" == "# begin compose hosts" ]]; then
+                inside=1
+                continue
+            fi
+            if [[ "$line" == "# end compose hosts" ]]; then
+                inside=0
+                continue
+            fi
+            [[ "$inside" -eq 1 ]] && continue
+            printf '%s\n' "$line" >> "$tmp"
+        done < "$config"
+    fi
+    printf '\n# begin compose hosts\n' >> "$tmp"
+    if [[ -f "$hosts" ]]; then
+        while read -r name user; do
+            [[ -n "$name" && -n "$user" ]] || continue
+            printf 'Host %s\n    User %s\n' "$name" "$user" >> "$tmp"
+        done < "$hosts"
+    fi
+    printf '# end compose hosts\n' >> "$tmp"
+    mv "$tmp" "$config" || return 1
+    chmod 600 "$config" || return 1
+}
+
+SaveHostUser() {
+    local short="$1" user="$2" file="$HOME/.ssh/compose-hosts" tmp line name found=0
+    if [[ ! -d "$HOME/.ssh" ]]; then
+        mkdir -p "$HOME/.ssh" || return 1
+        chmod 700 "$HOME/.ssh" || return 1
+    fi
+    tmp="$(mktemp)" || return 1
+    if [[ -f "$file" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            name="${line%% *}"
+            if [[ "$name" == "$short" ]]; then
+                printf '%s %s\n' "$short" "$user" >> "$tmp"
+                found=1
+            else
+                printf '%s\n' "$line" >> "$tmp"
+            fi
+        done < "$file"
+    fi
+    [[ "$found" -eq 1 ]] || printf '%s %s\n' "$short" "$user" >> "$tmp"
+    mv "$tmp" "$file" || return 1
+    chmod 600 "$file" || return 1
+    WriteSshHostBlock
+}
+
+RememberHost() {
+    local full="$1" user short current answer
+    [[ "$full" == *@* ]] || return 0
+    user="${full%%@*}"
+    short="${full#*@}"
+    [[ -n "$user" && -n "$short" && "$user" != "$full" ]] || return 0
+    MoveHostOk "$user" && MoveHostOk "$short" || return 1
+    current="$(ResolveHost "$short")"
+    if [[ "$current" == "$full" ]]; then
+        Say info "$short connects as $full."
+        return 0
+    fi
+    if [[ "$current" == *@* ]]; then
+        answer="$(Ask "Use $full instead of $current? [y/N]")"
+        [[ "$answer" == [yY] ]] || return 0
+    fi
+    SaveHostUser "$short" "$user" || return 1
+    Say info "$short connects as $full."
+}
+
 DeleteMovedService() {
     local name="$1" target file=""
     if ! target="$(ServiceDir "$name")"; then
@@ -1886,9 +2014,11 @@ Move() {
     host="${EXTRA_ARGS[0]:-}"
     if [[ -z "$host" || ${#EXTRA_ARGS[@]} -ne 1 ]] || ! MoveHostOk "$host"; then
         Say bad "Move needs one host."
-        Say info "dc move plex root@other-host"
+        Say info "dc move plex hostname"
+        Say info "dc move plex root@hostname"
         exit 1
     fi
+    host="$(ResolveHost "$host")"
     if ! command -v ssh >/dev/null 2>&1; then
         Say bad "ssh is required."
         exit 1
@@ -3053,6 +3183,9 @@ Key() {
         Say info "dc key"
         Say info "dc key root@other-host"
         exit 1
+    fi
+    if [[ -n "$host" ]]; then
+        RememberHost "$host" || Say warn "Could not remember a short name for $host."
     fi
     if ! command -v ssh-keygen >/dev/null 2>&1; then
         Say bad "ssh-keygen is required."
