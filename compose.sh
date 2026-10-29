@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.27
-### ChangeNotes: move accepts the other host's script folder.
+VERSION=v1.7.28
+### ChangeNotes: receive keeps the move stream away from docker.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -194,6 +194,13 @@ if [[ "${1:-}" == "--" ]]; then
 fi
 EXTRA_ARGS=("$@")
 
+RECEIVE_STREAM=""
+if [[ "${action:-}" == "receive" || "${action:-}" == "Receive" ]]; then
+    RECEIVE_STREAM="$(mktemp)" || exit 1
+    trap 'rm -f "$RECEIVE_STREAM"' EXIT
+    cat >"$RECEIVE_STREAM" || exit 1
+fi
+
 LowerCaseArguments() {
     action="${action,,}"
     folder="${folder,,}"
@@ -239,9 +246,9 @@ ServiceDirs() {
 }
 
 CheckDockerCompose() {
-    if docker compose version &> /dev/null; then
+    if docker compose version </dev/null &>/dev/null; then
         DockerCmd=(docker compose)
-    elif docker-compose version &> /dev/null || docker-compose -v &> /dev/null; then
+    elif docker-compose version </dev/null &>/dev/null || docker-compose -v </dev/null &>/dev/null; then
         DockerCmd=(docker-compose)
     else
         Say bad "No docker binaries available, exiting."
@@ -1865,7 +1872,7 @@ StreamFile() {
 
 Move() {
     local host file service_dir size answer remote_info script_path apps_path
-    local errfile remote_cmd name line key sent run_state header archive status
+    local errfile remote_cmd name line key sent run_state header archive status stopped_for_move=0
     local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=20 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
     local -a env_lines=() missing=() skipped=()
     local -a var_names=()
@@ -1972,6 +1979,7 @@ Move() {
                 Say bad "Stop failed. This host was left unchanged."
                 exit 1
             fi
+            stopped_for_move=1
         else
             Say warn "Copying while containers are running."
         fi
@@ -2010,7 +2018,15 @@ Move() {
     rm -f "$header" "$archive"
     if [[ "$status" -ne 0 ]]; then
         printf '\r\033[K' >&2
-        Say bad "Move failed. This host was left unchanged."
+        Say bad "Move failed. The folder is still here."
+        if [[ "$stopped_for_move" -eq 1 ]]; then
+            Say warn "Starting $folder again."
+            if "${DockerCmd[@]}" --file "$file" --env-file "$envFile" start; then
+                Say ok "$folder is running."
+            else
+                Say bad "Could not start $folder."
+            fi
+        fi
         exit 1
     fi
     if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
@@ -2042,6 +2058,9 @@ Receive() {
     if [[ -e "$APPS/$folder" ]]; then
         Say bad "Service already exists on this host."
         exit 1
+    fi
+    if [[ -n "${RECEIVE_STREAM:-}" ]]; then
+        exec <"$RECEIVE_STREAM"
     fi
     IFS= read -r magic || exit 1
     [[ "$magic" == "COMPOSE-MOVE 1" ]] || {
@@ -3144,6 +3163,10 @@ if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "path" ]]; 
     exit 0
 fi
 LowerCaseArguments;
+if [[ "$action" == "receive" ]]; then
+    Receive
+    exit $?
+fi
 CheckDockerCompose;
 CheckAction;
 
