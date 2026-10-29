@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.28
-### ChangeNotes: receive keeps the move stream away from docker.
+VERSION=v1.7.29
+### ChangeNotes: bashrc adds its source line when you say yes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -140,7 +140,7 @@ env|Edit env file|env
 version|Display version|version
 update|Update script when a new version exists|update
 repull|Re-download repo files|repull
-bashrc|Print the dc.bash source line|bashrc
+bashrc|Add the dc.bash source line to ~/.bashrc|bashrc
 key|Create an SSH key and install it on a host|key
 path|Print script and APPS paths|path
 help|This help menu|help
@@ -3147,8 +3147,78 @@ Key() {
     Say ok "$host accepts this key. dc move can connect."
 }
 
-PrintBashrc() {
+BashrcSourceLine() {
     printf 'source %q\n' "$SCRIPT_WORKING_DIR/dc.bash"
+}
+
+BashrcHasSource() {
+    local file="$1" line="$2" want raw path
+    want="${line#source }"
+    [[ -f "$file" ]] || return 1
+    while IFS= read -r raw || [[ -n "$raw" ]]; do
+        raw="${raw%$'\r'}"
+        raw="${raw#"${raw%%[![:space:]]*}"}"
+        raw="${raw%"${raw##*[![:space:]]}"}"
+        [[ -z "$raw" || "$raw" == \#* ]] && continue
+        [[ "$raw" == "$line" ]] && return 0
+        case "$raw" in
+            source\ *|.\ *)
+                path="${raw#source }"
+                [[ "$raw" == .\ * ]] && path="${raw#. }"
+                path="${path#"${path%%[![:space:]]*}"}"
+                if [[ "$path" == \"*\" && "$path" == *\" ]]; then
+                    path="${path:1:${#path}-2}"
+                elif [[ "$path" == \'*\' && "$path" == *\' ]]; then
+                    path="${path:1:${#path}-2}"
+                fi
+                [[ "$path" == "$SCRIPT_WORKING_DIR/dc.bash" || "$path" == "$want" ]] && return 0
+                ;;
+        esac
+    done < "$file"
+    return 1
+}
+
+PrintBashrc() {
+    local line file answer last
+    line="$(BashrcSourceLine)"
+    line="${line%$'\n'}"
+    if [[ -z "${HOME:-}" ]]; then
+        printf "  %b✘%b  HOME is not set.\n" "$c_red" "$c_reset" >&2
+        printf '\n%s\n\n' "$line" >&2
+        exit 1
+    fi
+    file="$HOME/.bashrc"
+    if BashrcHasSource "$file" "$line"; then
+        printf "  %b✔%b  Already in ~/.bashrc.\n" "$c_green" "$c_reset" >&2
+        return 0
+    fi
+    printf "  %b·%b  This line is not in ~/.bashrc.\n" "$c_teal" "$c_reset" >&2
+    printf '\n%s\n\n' "$line" >&2
+    answer="$(Ask "Add it to ~/.bashrc? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        printf "  %b·%b  Left ~/.bashrc unchanged.\n" "$c_teal" "$c_reset" >&2
+        return 0
+    fi
+    if [[ -e "$file" && ! -f "$file" ]]; then
+        printf "  %b✘%b  ~/.bashrc is not a file.\n" "$c_red" "$c_reset" >&2
+        exit 1
+    fi
+    if [[ -e "$file" && ! -w "$file" ]]; then
+        printf "  %b✘%b  Cannot write ~/.bashrc.\n" "$c_red" "$c_reset" >&2
+        exit 1
+    fi
+    {
+        if [[ -s "$file" ]]; then
+            last="$(tail -c 1 "$file" || true)"
+            [[ "$last" == $'\n' ]] || printf '\n'
+        fi
+        printf '%s\n' "$line"
+    } >>"$file" || {
+        printf "  %b✘%b  Could not update ~/.bashrc.\n" "$c_red" "$c_reset" >&2
+        exit 1
+    }
+    printf "  %b✔%b  Added the source line to ~/.bashrc.\n" "$c_green" "$c_reset" >&2
+    printf "  %b·%b  Open a new shell to use dc.\n" "$c_teal" "$c_reset" >&2
 }
 
 # Do the Things

@@ -9,13 +9,13 @@ Personal docker compose management
 
 1. Clone this repo into the directory that holds your app folders, for example `/home/docker/docker`.
 2. Copy `.env.example` to `.env` and set `APPS` to that directory.
-3. Print the `source` line and add it to `~/.bashrc`. Use the directory from step 1:
+3. Add the `dc` command to your shell. Use the directory from step 1:
 
 ```bash
-/home/docker/docker/compose.sh -a bashrc >> ~/.bashrc
+/home/docker/docker/compose.sh -a bashrc
 ```
 
-That command prints one line, `source /home/docker/docker/dc.bash`, using the path of the script you ran.
+That checks `~/.bashrc` for `source /home/docker/docker/dc.bash` and asks before adding it. Enter means no.
 
 4. Open a new shell.
 
@@ -61,6 +61,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.29 bashrc adds its source line when you say yes
 ### 1.7.28 receive keeps the move stream away from docker
 ### 1.7.27 move accepts the other host's script folder
 ### 1.7.26 key uses the host you typed, and move says when it is contacting that host
