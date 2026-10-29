@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.21
-### ChangeNotes: cp copies files and prune removes unused Docker data.
+VERSION=v1.7.23
+### ChangeNotes: move shows a progress bar while copying.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -132,6 +132,8 @@ enable|Enable service(s)|enable
 disable|Disable service(s)|disable
 create|Create service|create
 remove|Remove service|remove
+move|Move a service to another host|move
+receive|Receive a service from another host|receive
 edit|Edit service|edit
 env|Edit env file|env
 # @group Script
@@ -139,6 +141,7 @@ version|Display version|version
 update|Update script when a new version exists|update
 repull|Re-download repo files|repull
 bashrc|Print the dc.bash source line|bashrc
+path|Print script and APPS paths|path
 help|This help menu|help
 # @end
 EOF
@@ -159,7 +162,7 @@ Help() {
     printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
     printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
     printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n" "$c_dim" "$c_reset"
-    printf "  %bexample%b     compose.sh -a exec -s plex -- bash\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a move -s plex -- root@other-host\n" "$c_dim" "$c_reset"
     Banner "actions"
     while IFS= read -r line; do
         if [[ "$line" == "# @group "* ]]; then
@@ -352,6 +355,9 @@ CheckAction() {
                 Create "$folder"
                 ;;
             remove) Remove "$folder" ;;
+            move) Move ;;
+            receive) Receive ;;
+            path) Path ;;
             version)
                 Banner "version"
                 Say ok "$VERSION"
@@ -1498,6 +1504,624 @@ Cp() {
         exit 1
     fi
     RunOneCompose "$file" cp "${EXTRA_ARGS[@]}"
+}
+
+ValidServiceName() {
+    local name="$1"
+    [[ -n "$name" && "$name" != "all" && "$name" != "." && "$name" != ".." ]] || return 1
+    [[ "$name" != *"/"* && "$name" != *".."* && "$name" != *$'\n'* ]] || return 1
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+ComposeVarNames() {
+    local file="$1" text match name new
+    local -A seen=()
+    text="$(tr -d '\r' < "$file")"
+    while [[ "$text" =~ \$\{([A-Za-z_][A-Za-z0-9_]*) ]]; do
+        name="${BASH_REMATCH[1]}"
+        match="${BASH_REMATCH[0]}"
+        if [[ -z "${seen[$name]+x}" ]]; then
+            seen["$name"]=1
+            printf '%s\n' "$name"
+        fi
+        new="${text/"$match"/}"
+        [[ "$new" == "$text" ]] && break
+        text="$new"
+    done
+    while [[ "$text" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
+        name="${BASH_REMATCH[1]}"
+        match="${BASH_REMATCH[0]}"
+        if [[ -z "${seen[$name]+x}" ]]; then
+            seen["$name"]=1
+            printf '%s\n' "$name"
+        fi
+        new="${text/"$match"/}"
+        [[ "$new" == "$text" ]] && break
+        text="$new"
+    done
+}
+
+EnvRawLine() {
+    local file="$1" key="$2" line found="" k
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
+        k="${BASH_REMATCH[1]}"
+        [[ "$k" == "$key" ]] || continue
+        line="${line#"${line%%[![:space:]]*}"}"
+        found="$line"
+    done < "$file"
+    [[ -n "$found" ]] && printf '%s\n' "$found"
+}
+
+TrimField() {
+    local s="$1"
+    s="${s//$'\r'/}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    if [[ "$s" == \"*\" && "$s" == *\" ]]; then
+        s="${s:1:${#s}-2}"
+    elif [[ "$s" == \'*\' && "$s" == *\' ]]; then
+        s="${s:1:${#s}-2}"
+    fi
+    printf '%s' "$s"
+}
+
+SkippedMounts() {
+    local file="$1" service_dir="$2"
+    local line item expanded hostpart indent vol_indent=0 in_vol=0
+    local -A seen=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        if [[ "$in_vol" -eq 0 ]]; then
+            if [[ "$line" =~ ^([[:space:]]*)volumes:[[:space:]]*$ ]]; then
+                in_vol=1
+                vol_indent="${#BASH_REMATCH[1]}"
+            fi
+            continue
+        fi
+        [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ "$line" =~ ^([[:space:]]*) ]]; then
+            indent="${#BASH_REMATCH[1]}"
+        else
+            indent=0
+        fi
+        if [[ "$indent" -le "$vol_indent" ]]; then
+            in_vol=0
+            if [[ "$line" =~ ^([[:space:]]*)volumes:[[:space:]]*$ ]]; then
+                in_vol=1
+                vol_indent="${#BASH_REMATCH[1]}"
+            fi
+            continue
+        fi
+        if [[ "$line" =~ ^[[:space:]]*-[[:space:]]*(.*)$ ]]; then
+            item="$(TrimField "${BASH_REMATCH[1]}")"
+        elif [[ "$line" =~ ^[[:space:]]*source:[[:space:]]*(.*)$ ]]; then
+            item="$(TrimField "${BASH_REMATCH[1]}")"
+        else
+            continue
+        fi
+        [[ -z "$item" || "$item" == "type:"* || "$item" == "target:"* ]] && continue
+        expanded="$(ExpandComposeValue "$item")"
+        [[ -n "$expanded" ]] && item="$expanded"
+        if [[ "$item" == *:* ]]; then
+            hostpart="$(TrimField "${item%%:*}")"
+        else
+            hostpart="$(TrimField "$item")"
+        fi
+        [[ -z "$hostpart" || -n "${seen[$hostpart]+x}" ]] && continue
+        seen["$hostpart"]=1
+        case "$hostpart" in
+            "$service_dir"|"$service_dir"/*|.|./*) ;;
+            *..*|/*|~*) printf '%s\n' "$hostpart" ;;
+            */*) ;;
+            *) printf 'volume %s\n' "$hostpart" ;;
+        esac
+    done < "$file"
+}
+
+TarMembersSafe() {
+    local archive="$1" service="$2" member part
+    local -a parts=()
+    local ok=0
+    while IFS= read -r member; do
+        [[ -z "$member" ]] && continue
+        member="${member#./}"
+        [[ "$member" == "$service" || "$member" == "$service"/* ]] || return 1
+        IFS=/ read -ra parts <<< "$member"
+        for part in "${parts[@]}"; do
+            [[ -z "$part" ]] && continue
+            [[ "$part" == "." || "$part" == ".." ]] && return 1
+        done
+        ok=1
+    done < <(tar -tzf "$archive")
+    [[ "$ok" -eq 1 ]]
+}
+
+Path() {
+    printf 'script=%s\n' "$SCRIPT_WORKING_DIR"
+    printf 'apps=%s\n' "$APPS"
+}
+
+RemotePathProgram() {
+    cat << 'END'
+home="$HOME"
+bashrc="$home/.bashrc"
+line=""
+if [[ -f "$bashrc" ]]; then
+    line="$(grep -E '^[[:space:]]*source[[:space:]]+.*dc\.bash' "$bashrc" | tail -n 1 || true)"
+fi
+if [[ -z "$line" ]]; then
+    printf 'error=dc.bash source line was not found in ~/.bashrc\n' >&2
+    exit 1
+fi
+path="${line#*source}"
+path="${path%%#*}"
+path="${path#"${path%%[![:space:]]*}"}"
+path="${path%"${path##*[![:space:]]}"}"
+if [[ "$path" == \"*\" && "$path" == *\" ]]; then
+    path="${path:1:${#path}-2}"
+elif [[ "$path" == \'*\' && "$path" == *\' ]]; then
+    path="${path:1:${#path}-2}"
+fi
+path="${path/#\~/$home}"
+case "$path" in
+    '$HOME'/*) path="$home/${path#'$HOME'/}" ;;
+esac
+dir="$(cd "$(dirname "$path")" && pwd)" || exit 1
+script="$dir/compose.sh"
+if [[ ! -f "$script" ]]; then
+    printf 'error=compose.sh was not found next to dc.bash\n' >&2
+    exit 1
+fi
+if [[ "${PATH_ONLY:-}" == 1 ]]; then
+    printf '%s\n' "$script"
+    exit 0
+fi
+bash "$script" -a path
+END
+}
+
+MoveHostOk() {
+    local host="$1"
+    [[ "$host" =~ ^[A-Za-z0-9._+-]+(@[A-Za-z0-9._-]+)?$ ]]
+}
+
+DeleteMovedService() {
+    local name="$1" target file=""
+    if ! target="$(ServiceDir "$name")"; then
+        return 1
+    fi
+    if [[ -f "$target/$COMPOSE_FILE" ]]; then
+        file="$target/$COMPOSE_FILE"
+    elif [[ -f "$target/$COMPOSE_FILE_DISABLED" ]]; then
+        file="$target/$COMPOSE_FILE_DISABLED"
+    fi
+    if [[ -n "$file" ]] && CheckStatus "$name"; then
+        Say warn "Stopping it now."
+        "${DockerCmd[@]}" --file "$file" --env-file "$envFile" down || return 1
+    fi
+    Say warn "Deleting folder."
+    rm -r -- "$target"
+    Say ok "Folder deleted."
+}
+
+PROGRESS_TICK=0
+ProgressBar() {
+    local label="$1" done="$2" total="$3"
+    local width=24 pct filled empty bar mark spin='|/-\'
+    [[ "$done" =~ ^[0-9]+$ ]] || done=0
+    [[ "$total" =~ ^[0-9]+$ && "$total" -gt 0 ]] || total=1
+    if [[ "$done" -gt "$total" ]]; then
+        done="$total"
+    fi
+    pct=$(( done * 100 / total ))
+    filled=$(( pct * width / 100 ))
+    empty=$(( width - filled ))
+    printf -v bar '%*s' "$filled" ''
+    bar="${bar// /█}"
+    printf -v empty '%*s' "$empty" ''
+    empty="${empty// /░}"
+    mark="${spin:PROGRESS_TICK:1}"
+    PROGRESS_TICK=$(( (PROGRESS_TICK + 1) % 4 ))
+    printf '\r  %b%s%s%b  %s  %-8s %3d%%' "$c_teal" "$bar" "$empty" "$c_reset" "$mark" "$label" "$pct" >&2
+}
+
+PackService() {
+    local dest="$1"
+    local verbose err count done_n tpid watcher=""
+    verbose="$(mktemp)" || return 1
+    err="$(mktemp)" || {
+        rm -f "$verbose"
+        return 1
+    }
+    count="$(find "$service_dir" -print 2>/dev/null | wc -l)"
+    count="${count//[[:space:]]/}"
+    [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || count=1
+    if command -v stdbuf >/dev/null 2>&1; then
+        stdbuf -oL tar -C "$APPS" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
+    else
+        tar -C "$APPS" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
+    fi
+    tpid=$!
+    if [[ -t 2 ]]; then
+        (
+            while :; do
+                done_n="$(wc -l < "$verbose" 2>/dev/null || echo 0)"
+                done_n="${done_n//[[:space:]]/}"
+                [[ "$done_n" =~ ^[0-9]+$ ]] || done_n=0
+                ProgressBar packing "$done_n" "$count"
+                sleep 0.1
+            done
+        ) &
+        watcher=$!
+    fi
+    if ! wait "$tpid"; then
+        if [[ -n "$watcher" ]]; then
+            kill "$watcher" 2>/dev/null
+            wait "$watcher" 2>/dev/null
+        fi
+        printf '\r\033[K' >&2
+        Say bad "Could not pack $folder."
+        [[ -s "$err" ]] && cat "$err" >&2
+        rm -f "$verbose" "$err"
+        return 1
+    fi
+    if [[ -n "$watcher" ]]; then
+        kill "$watcher" 2>/dev/null
+        wait "$watcher" 2>/dev/null
+        ProgressBar packing "$count" "$count"
+        printf '\n' >&2
+    fi
+    rm -f "$verbose" "$err"
+}
+
+StreamFile() {
+    local file="$1" label="$2"
+    local total fifo reader line copy_status=0
+    total="$(wc -c < "$file")"
+    total="${total//[[:space:]]/}"
+    [[ "$total" =~ ^[0-9]+$ && "$total" -gt 0 ]] || total=1
+    if [[ ! -t 2 ]]; then
+        cat "$file"
+        return
+    fi
+    if dd if=/dev/null of=/dev/null count=0 status=progress >/dev/null 2>&1; then
+        fifo="$(mktemp -u)" || {
+            cat "$file"
+            return
+        }
+        mkfifo "$fifo" || {
+            cat "$file"
+            return
+        }
+        (
+            while IFS= read -r -d $'\r' line || [[ -n "$line" ]]; do
+                [[ "$line" == *bytes* ]] || continue
+                [[ "$line" =~ ([0-9]+) ]] || continue
+                ProgressBar "$label" "${BASH_REMATCH[1]}" "$total"
+            done <"$fifo"
+        ) &
+        reader=$!
+        ProgressBar "$label" 0 "$total"
+        LC_ALL=C dd if="$file" bs=1048576 status=progress 2>"$fifo"
+        copy_status=$?
+        wait "$reader"
+        rm -f "$fifo"
+        if [[ "$copy_status" -ne 0 ]]; then
+            printf '\r\033[K' >&2
+            return "$copy_status"
+        fi
+        ProgressBar "$label" "$total" "$total"
+        printf '\n' >&2
+        return 0
+    fi
+    if command -v pv >/dev/null 2>&1; then
+        fifo="$(mktemp -u)" || {
+            cat "$file"
+            return
+        }
+        mkfifo "$fifo" || {
+            cat "$file"
+            return
+        }
+        (
+            while IFS= read -r line; do
+                line="${line//[[:space:]]/}"
+                [[ "$line" =~ ^[0-9]+$ ]] || continue
+                ProgressBar "$label" "$line" 100
+            done <"$fifo"
+        ) &
+        reader=$!
+        pv -n -s "$total" "$file" 2>"$fifo"
+        copy_status=$?
+        wait "$reader"
+        rm -f "$fifo"
+        if [[ "$copy_status" -ne 0 ]]; then
+            printf '\r\033[K' >&2
+            return "$copy_status"
+        fi
+        ProgressBar "$label" 100 100
+        printf '\n' >&2
+        return 0
+    fi
+    cat "$file"
+}
+
+Move() {
+    local host file service_dir size answer remote_info script_path apps_path
+    local errfile remote_cmd name line key sent run_state header archive status
+    local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=20)
+    local -a env_lines=() missing=() skipped=()
+    local -a var_names=()
+
+    Banner "move"
+    if ! ValidServiceName "$folder"; then
+        Say bad "Move needs a service name."
+        Say info "dc move plex root@other-host"
+        exit 1
+    fi
+    host="${EXTRA_ARGS[0]:-}"
+    if [[ -z "$host" || ${#EXTRA_ARGS[@]} -ne 1 ]] || ! MoveHostOk "$host"; then
+        Say bad "Move needs one host."
+        Say info "dc move plex root@other-host"
+        exit 1
+    fi
+    if ! command -v ssh >/dev/null 2>&1; then
+        Say bad "ssh is required."
+        exit 1
+    fi
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE"
+    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
+    else
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    service_dir="$(cd -P "$APPS/$folder" && pwd -P)" || {
+        Say bad "Service does not exist."
+        exit 1
+    }
+    size="$(du -sh "$service_dir" 2>/dev/null | awk '{print $1}')"
+    [[ -n "$size" ]] || size="unknown"
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && var_names+=("$name")
+    done < <(ComposeVarNames "$file")
+    for name in "${var_names[@]}"; do
+        line="$(EnvRawLine "$envFile" "$name")"
+        if [[ -n "$line" ]]; then
+            env_lines+=("$line")
+        else
+            missing+=("$name")
+        fi
+    done
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && skipped+=("$line")
+    done < <(SkippedMounts "$file" "$service_dir")
+
+    errfile="$(mktemp)" || exit 1
+    remote_info="$(ssh "${ssh_opts[@]}" "$host" bash -s <<<"$(RemotePathProgram)" 2>"$errfile")" || {
+        Say bad "Could not reach $host."
+        [[ -s "$errfile" ]] && cat "$errfile" >&2
+        rm -f "$errfile"
+        exit 1
+    }
+    rm -f "$errfile"
+    while IFS= read -r line; do
+        case "$line" in
+            script=*) script_path="${line#script=}" ;;
+            apps=*) apps_path="${line#apps=}" ;;
+        esac
+    done <<< "$remote_info"
+    if [[ "$script_path" != /*/compose.sh || "$script_path" == *$'\n'* || -z "$apps_path" ]]; then
+        Say bad "The other host did not report its path."
+        [[ -n "$remote_info" ]] && printf '%s\n' "$remote_info" >&2
+        exit 1
+    fi
+
+    Say info "Folder size: $size"
+    Say info "Destination: $host"
+    Say info "Apps path: $apps_path"
+    Say info "The other host pulls the image when the service is started."
+    if [[ ${#skipped[@]} -gt 0 ]]; then
+        Say warn "Outside mounts stay here:"
+        printf '    %s\n' "${skipped[@]}"
+    fi
+    if [[ ${#env_lines[@]} -gt 0 ]]; then
+        sent=""
+        for line in "${env_lines[@]}"; do
+            sent+="${line%%=*} "
+        done
+        Say info "Env keys: ${sent% }"
+    fi
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        Say warn "No value here for: ${missing[*]}"
+    fi
+    answer="$(Ask "Move $folder to $host? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Keeping $folder here."
+        return 0
+    fi
+    run_state="$(printf '%s' "$(ReturnStatus "$folder")" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$run_state" == *running* || "$run_state" == *restarting* || "$run_state" == *paused* ]]; then
+        answer="$(Ask "Stop $folder before moving? [Y/n]")"
+        if [[ -z "$answer" || "$answer" == [yY] ]]; then
+            Say warn "Stopping $folder."
+            if ! "${DockerCmd[@]}" --file "$file" --env-file "$envFile" stop; then
+                Say bad "Stop failed. This host was left unchanged."
+                exit 1
+            fi
+        else
+            Say warn "Copying while containers are running."
+        fi
+    fi
+
+    header="$(mktemp)" || exit 1
+    archive="$(mktemp)" || {
+        rm -f "$header"
+        exit 1
+    }
+    {
+        printf 'COMPOSE-MOVE 1\n'
+        printf 'service %s\n' "$folder"
+        printf 'compose %s\n' "$(basename "$file")"
+        printf 'env %s\n' "${#env_lines[@]}"
+        if [[ ${#env_lines[@]} -gt 0 ]]; then
+            printf '%s\n' "${env_lines[@]}"
+        fi
+    } >"$header" || {
+        Say bad "Could not pack $folder."
+        rm -f "$header" "$archive"
+        exit 1
+    }
+    if ! PackService "$archive"; then
+        rm -f "$header" "$archive"
+        exit 1
+    fi
+    printf -v remote_cmd 'bash %q -a receive -s %q' "$script_path" "$folder"
+    set -o pipefail
+    {
+        cat "$header"
+        StreamFile "$archive" sending
+    } | ssh "${ssh_opts[@]}" "$host" "$remote_cmd"
+    status=$?
+    set +o pipefail
+    rm -f "$header" "$archive"
+    if [[ "$status" -ne 0 ]]; then
+        printf '\r\033[K' >&2
+        Say bad "Move failed. This host was left unchanged."
+        exit 1
+    fi
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        mv "$APPS/$folder/$COMPOSE_FILE" "$APPS/$folder/$COMPOSE_FILE_DISABLED"
+        Say warn "Disabled $folder on this host."
+    fi
+    Say ok "Moved $folder to $host. It is disabled there."
+    answer="$(Ask "Remove $folder from this host? [y/N]")"
+    if [[ "$answer" == [yY] ]]; then
+        DeleteMovedService "$folder"
+        return
+    fi
+    Say info "Kept the disabled folder here."
+}
+
+Receive() {
+    local magic svc_line compose_line env_line compose_name env_count
+    local line key added=0 i work archive arrived final_name
+    local -a env_lines=()
+
+    if ! ValidServiceName "$folder"; then
+        Say bad "Invalid service name."
+        exit 1
+    fi
+    if [[ ! -d "$APPS" ]]; then
+        Say bad "APPS directory does not exist."
+        exit 1
+    fi
+    if [[ -e "$APPS/$folder" ]]; then
+        Say bad "Service already exists on this host."
+        exit 1
+    fi
+    IFS= read -r magic || exit 1
+    [[ "$magic" == "COMPOSE-MOVE 1" ]] || {
+        Say bad "Move stream was not recognized."
+        exit 1
+    }
+    IFS= read -r svc_line || exit 1
+    IFS= read -r compose_line || exit 1
+    IFS= read -r env_line || exit 1
+    [[ "$svc_line" == "service $folder" ]] || {
+        Say bad "Move stream service does not match."
+        exit 1
+    }
+    [[ "$compose_line" == compose\ * ]] || {
+        Say bad "Move stream was not recognized."
+        exit 1
+    }
+    compose_name="${compose_line#compose }"
+    [[ "$compose_name" != */* && "$compose_name" != *..* && "$compose_name" =~ ^[A-Za-z0-9._-]+$ ]] || {
+        Say bad "Compose file name was refused."
+        exit 1
+    }
+    [[ "$env_line" =~ ^env[[:space:]]+([0-9]+)$ ]] || {
+        Say bad "Move stream was not recognized."
+        exit 1
+    }
+    env_count="${BASH_REMATCH[1]}"
+    if [[ "$env_count" -gt 500 ]]; then
+        Say bad "Move stream listed too many env keys."
+        exit 1
+    fi
+    for ((i=0; i<env_count; i++)); do
+        IFS= read -r line || {
+            Say bad "Move stream ended early."
+            exit 1
+        }
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || {
+            Say bad "Move stream had a bad env line."
+            exit 1
+        }
+        env_lines+=("$line")
+    done
+    work="$(mktemp -d)" || exit 1
+    archive="$work/archive.tar.gz"
+    if ! cat >"$archive"; then
+        rm -rf "$work"
+        Say bad "Move stream ended early."
+        exit 1
+    fi
+    mkdir -p "$work/unpack"
+    if ! TarMembersSafe "$archive" "$folder"; then
+        rm -rf "$work"
+        Say bad "Move archive was refused."
+        exit 1
+    fi
+    if ! tar -xzf "$archive" -C "$work/unpack"; then
+        rm -rf "$work"
+        Say bad "Could not unpack the service."
+        exit 1
+    fi
+    final_name="$COMPOSE_FILE_DISABLED"
+    arrived="$work/unpack/$folder/$compose_name"
+    if [[ -f "$arrived" && "$compose_name" != "$final_name" ]]; then
+        mv -f "$arrived" "$work/unpack/$folder/$final_name"
+    fi
+    if [[ -f "$work/unpack/$folder/$COMPOSE_FILE" ]]; then
+        mv -f "$work/unpack/$folder/$COMPOSE_FILE" "$work/unpack/$folder/$final_name"
+    fi
+    if [[ ! -f "$work/unpack/$folder/$final_name" ]]; then
+        rm -rf "$work"
+        Say bad "Compose file was not in the archive."
+        exit 1
+    fi
+    if [[ -e "$APPS/$folder" ]]; then
+        rm -rf "$work"
+        Say bad "Service already exists on this host."
+        exit 1
+    fi
+    if ! mv "$work/unpack/$folder" "$APPS/$folder"; then
+        rm -rf "$work"
+        Say bad "Could not place the service folder."
+        exit 1
+    fi
+    rm -rf "$work"
+    if [[ ${#env_lines[@]} -gt 0 ]]; then
+        for line in "${env_lines[@]}"; do
+            key="${line%%=*}"
+            if grep -qE "^[[:space:]]*${key}=" "$envFile"; then
+                Say info "Kept $key."
+                continue
+            fi
+            if [[ "$added" -eq 0 ]]; then
+                printf '\n# moved service %s\n' "$folder" >>"$envFile"
+            fi
+            printf '%s\n' "$line" >>"$envFile"
+            Say ok "Added $key."
+            added=1
+        done
+    fi
+    Say ok "Received $folder. It is disabled."
 }
 
 Exec() {
