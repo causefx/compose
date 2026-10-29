@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.25
-### ChangeNotes: key installs the SSH key on a host when you say yes.
+VERSION=v1.7.26
+### ChangeNotes: key uses the host you typed, and move says when it is contacting that host.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1854,7 +1854,7 @@ StreamFile() {
 Move() {
     local host file service_dir size answer remote_info script_path apps_path
     local errfile remote_cmd name line key sent run_state header archive status
-    local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=20)
+    local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=20 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
     local -a env_lines=() missing=() skipped=()
     local -a var_names=()
 
@@ -1886,23 +1886,7 @@ Move() {
         Say bad "Service does not exist."
         exit 1
     }
-    size="$(du -sh "$service_dir" 2>/dev/null | awk '{print $1}')"
-    [[ -n "$size" ]] || size="unknown"
-    while IFS= read -r name; do
-        [[ -n "$name" ]] && var_names+=("$name")
-    done < <(ComposeVarNames "$file")
-    for name in "${var_names[@]}"; do
-        line="$(EnvRawLine "$envFile" "$name")"
-        if [[ -n "$line" ]]; then
-            env_lines+=("$line")
-        else
-            missing+=("$name")
-        fi
-    done
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && skipped+=("$line")
-    done < <(SkippedMounts "$file" "$service_dir")
-
+    Say info "Contacting $host."
     errfile="$(mktemp)" || exit 1
     remote_info="$(ssh "${ssh_opts[@]}" "$host" bash -s <<<"$(RemotePathProgram)" 2>"$errfile")" || {
         Say bad "Could not reach $host."
@@ -1922,6 +1906,23 @@ Move() {
         [[ -n "$remote_info" ]] && printf '%s\n' "$remote_info" >&2
         exit 1
     fi
+    Say info "Measuring $folder."
+    size="$(du -sh "$service_dir" 2>/dev/null | awk '{print $1}')"
+    [[ -n "$size" ]] || size="unknown"
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && var_names+=("$name")
+    done < <(ComposeVarNames "$file")
+    for name in "${var_names[@]}"; do
+        line="$(EnvRawLine "$envFile" "$name")"
+        if [[ -n "$line" ]]; then
+            env_lines+=("$line")
+        else
+            missing+=("$name")
+        fi
+    done
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && skipped+=("$line")
+    done < <(SkippedMounts "$file" "$service_dir")
 
     Say info "Folder size: $size"
     Say info "Destination: $host"
@@ -3009,6 +3010,9 @@ Key() {
         exit 1
     fi
     host="${EXTRA_ARGS[0]:-}"
+    if [[ -z "$host" && -n "${folder:-}" ]]; then
+        host="$folder"
+    fi
     if [[ ${#EXTRA_ARGS[@]} -gt 1 ]] || { [[ -n "$host" ]] && ! MoveHostOk "$host"; }; then
         Say bad "Key takes an optional host."
         Say info "dc key"
@@ -3101,7 +3105,7 @@ Key() {
         printf '\n%s\n\n' "$import_cmd"
         exit 1
     fi
-    if ! ssh -T -o BatchMode=yes -o ConnectTimeout=20 "$host" true; then
+    if ! ssh -T -o BatchMode=yes -o ConnectTimeout=20 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey "$host" true; then
         Say bad "dc move cannot connect to $host yet."
         exit 1
     fi
@@ -3119,6 +3123,10 @@ if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "bashrc" ]]
 fi
 CheckEnv;
 CheckEnvVariables;
+if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "path" ]]; then
+    Path
+    exit 0
+fi
 LowerCaseArguments;
 CheckDockerCompose;
 CheckAction;
