@@ -61,6 +61,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.27 move accepts the other host's script folder
 ### 1.7.26 key uses the host you typed, and move says when it is contacting that host
 ### 1.7.25 key installs the SSH key on a host when you say yes
 ### 1.7.24 key creates an SSH key and prints how to install it

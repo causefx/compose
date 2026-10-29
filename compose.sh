@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.26
-### ChangeNotes: key uses the host you typed, and move says when it is contacting that host.
+VERSION=v1.7.27
+### ChangeNotes: move accepts the other host's script folder.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1642,8 +1642,20 @@ TarMembersSafe() {
 }
 
 Path() {
-    printf 'script=%s\n' "$SCRIPT_WORKING_DIR"
+    printf 'script=%s\n' "$SCRIPT_PATH"
     printf 'apps=%s\n' "$APPS"
+}
+
+RemoteScriptPath() {
+    local path="$1"
+    path="${path%$'\r'}"
+    [[ "$path" == /* && "$path" != *$'\n'* ]] || return 1
+    path="${path%/}"
+    if [[ "$path" != */compose.sh ]]; then
+        path="$path/compose.sh"
+    fi
+    [[ "$path" == /*/compose.sh ]] || return 1
+    printf '%s\n' "$path"
 }
 
 RemotePathProgram() {
@@ -1901,7 +1913,10 @@ Move() {
             apps=*) apps_path="${line#apps=}" ;;
         esac
     done <<< "$remote_info"
-    if [[ "$script_path" != /*/compose.sh || "$script_path" == *$'\n'* || -z "$apps_path" ]]; then
+    if ! script_path="$(RemoteScriptPath "$script_path")"; then
+        script_path=""
+    fi
+    if [[ -z "$script_path" || "$apps_path" == *$'\n'* || -z "$apps_path" ]]; then
         Say bad "The other host did not report its path."
         [[ -n "$remote_info" ]] && printf '%s\n' "$remote_info" >&2
         exit 1
@@ -1927,6 +1942,7 @@ Move() {
     Say info "Folder size: $size"
     Say info "Destination: $host"
     Say info "Apps path: $apps_path"
+    Say info "Script: $script_path"
     Say info "The other host pulls the image when the service is started."
     if [[ ${#skipped[@]} -gt 0 ]]; then
         Say warn "Outside mounts stay here:"
