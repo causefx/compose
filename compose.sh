@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.23
-### ChangeNotes: move shows a progress bar while copying.
+VERSION=v1.7.24
+### ChangeNotes: key creates an SSH key and prints how to install it.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -141,6 +141,7 @@ version|Display version|version
 update|Update script when a new version exists|update
 repull|Re-download repo files|repull
 bashrc|Print the dc.bash source line|bashrc
+key|Create an SSH key for moving services|key
 path|Print script and APPS paths|path
 help|This help menu|help
 # @end
@@ -163,6 +164,7 @@ Help() {
     printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
     printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a move -s plex -- root@other-host\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a key -- root@other-host\n" "$c_dim" "$c_reset"
     Banner "actions"
     while IFS= read -r line; do
         if [[ "$line" == "# @group "* ]]; then
@@ -375,6 +377,7 @@ CheckAction() {
             edit) EditFile "$folder" ;;
             env) EditFile env ;;
             bashrc) PrintBashrc ;;
+            key) Key ;;
             help) Help ;;
             *)
                 Say bad "Unknown handler: $handler"
@@ -2996,6 +2999,90 @@ ShowImages() {
         exit 1
     fi
     Say ok "Pulled ${total} image(s)."
+}
+
+Key() {
+    local ssh_dir priv="" pub host name comment created=0 shown import_cmd copy_cmd quoted
+    Banner "key"
+    if [[ -z "${HOME:-}" ]]; then
+        Say bad "HOME is not set."
+        exit 1
+    fi
+    host="${EXTRA_ARGS[0]:-}"
+    if [[ ${#EXTRA_ARGS[@]} -gt 1 ]] || { [[ -n "$host" ]] && ! MoveHostOk "$host"; }; then
+        Say bad "Key takes an optional host."
+        Say info "dc key"
+        Say info "dc key root@other-host"
+        exit 1
+    fi
+    if ! command -v ssh-keygen >/dev/null 2>&1; then
+        Say bad "ssh-keygen is required."
+        exit 1
+    fi
+    ssh_dir="$HOME/.ssh"
+    for name in id_ed25519 id_ecdsa id_rsa; do
+        if [[ -f "$ssh_dir/$name" ]]; then
+            priv="$ssh_dir/$name"
+            break
+        fi
+    done
+    if [[ -z "$priv" ]]; then
+        if [[ -e "$ssh_dir/id_ed25519.pub" ]]; then
+            Say bad "A public key exists without its private key."
+            exit 1
+        fi
+        mkdir -p "$ssh_dir" || exit 1
+        chmod 700 "$ssh_dir" || exit 1
+        comment="compose@$(hostname 2>/dev/null || printf 'compose')"
+        if ! ssh-keygen -q -t ed25519 -f "$ssh_dir/id_ed25519" -N "" -C "$comment" </dev/null; then
+            Say bad "Could not create the key."
+            exit 1
+        fi
+        priv="$ssh_dir/id_ed25519"
+        created=1
+    fi
+    if [[ ! -s "$priv.pub" ]]; then
+        if ! ssh-keygen -y -P "" -f "$priv" >"$priv.pub" 2>/dev/null </dev/null; then
+            Say bad "No public key next to $priv."
+            exit 1
+        fi
+        chmod 644 "$priv.pub" || exit 1
+    fi
+    IFS= read -r pub <"$priv.pub" || exit 1
+    pub="${pub//$'\r'/}"
+    if [[ ! "$pub" =~ ^ssh-(ed25519|rsa|ecdsa)[[:space:]]+[A-Za-z0-9+/=]+ ]]; then
+        Say bad "Public key looks wrong."
+        exit 1
+    fi
+    if [[ "$priv" == "$HOME/"* ]]; then
+        shown="~/${priv#"$HOME/"}"
+    else
+        shown="$priv"
+    fi
+    if [[ "$created" -eq 1 ]]; then
+        Say ok "Created $shown."
+        Say info "Passphrase is empty, so dc move can use it."
+    else
+        Say ok "Using $shown."
+        if ! ssh-keygen -y -P "" -f "$priv" >/dev/null 2>&1 </dev/null; then
+            Say warn "This key has a passphrase. Run ssh-add $shown before dc move."
+        fi
+    fi
+    if [[ "$pub" == *"'"* || "$pub" == *\\* ]]; then
+        printf -v quoted '%q' "$pub"
+        import_cmd="mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%s\\n' ${quoted} >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    else
+        import_cmd="mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%s\\n' '${pub}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    fi
+    if [[ -n "$host" ]]; then
+        printf -v copy_cmd 'ssh-copy-id -i %q %q' "$priv.pub" "$host"
+    else
+        printf -v copy_cmd 'ssh-copy-id -i %q user@other-host' "$priv.pub"
+    fi
+    Say info "On the other host, run:"
+    printf '\n%s\n\n' "$import_cmd"
+    Say info "From this host, confirm the host once and enter the password once:"
+    printf '\n%s\n\n' "$copy_cmd"
 }
 
 PrintBashrc() {
