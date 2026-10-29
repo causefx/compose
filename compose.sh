@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.24
-### ChangeNotes: key creates an SSH key and prints how to install it.
+VERSION=v1.7.25
+### ChangeNotes: key installs the SSH key on a host when you say yes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -141,7 +141,7 @@ version|Display version|version
 update|Update script when a new version exists|update
 repull|Re-download repo files|repull
 bashrc|Print the dc.bash source line|bashrc
-key|Create an SSH key for moving services|key
+key|Create an SSH key and install it on a host|key
 path|Print script and APPS paths|path
 help|This help menu|help
 # @end
@@ -3002,7 +3002,7 @@ ShowImages() {
 }
 
 Key() {
-    local ssh_dir priv="" pub host name comment created=0 shown import_cmd copy_cmd quoted
+    local ssh_dir priv="" pub host name comment created=0 shown import_cmd copy_cmd quoted answer
     Banner "key"
     if [[ -z "${HOME:-}" ]]; then
         Say bad "HOME is not set."
@@ -3074,15 +3074,38 @@ Key() {
     else
         import_cmd="mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%s\\n' '${pub}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
     fi
-    if [[ -n "$host" ]]; then
-        printf -v copy_cmd 'ssh-copy-id -i %q %q' "$priv.pub" "$host"
-    else
+    if [[ -z "$host" ]]; then
         printf -v copy_cmd 'ssh-copy-id -i %q user@other-host' "$priv.pub"
+        Say info "On the other host, run:"
+        printf '\n%s\n\n' "$import_cmd"
+        Say info "From this host, confirm the host once and enter the password once:"
+        printf '\n%s\n\n' "$copy_cmd"
+        return 0
     fi
-    Say info "On the other host, run:"
-    printf '\n%s\n\n' "$import_cmd"
-    Say info "From this host, confirm the host once and enter the password once:"
-    printf '\n%s\n\n' "$copy_cmd"
+    if ! command -v ssh-copy-id >/dev/null 2>&1; then
+        Say warn "ssh-copy-id is not installed."
+        Say info "On the other host, run:"
+        printf '\n%s\n\n' "$import_cmd"
+        return 0
+    fi
+    answer="$(Ask "Install this key on $host? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Leaving $host unchanged."
+        Say info "On the other host, run:"
+        printf '\n%s\n\n' "$import_cmd"
+        return 0
+    fi
+    if ! ssh-copy-id -i "$priv.pub" "$host"; then
+        Say bad "Could not install the key on $host."
+        Say info "On the other host, run:"
+        printf '\n%s\n\n' "$import_cmd"
+        exit 1
+    fi
+    if ! ssh -T -o BatchMode=yes -o ConnectTimeout=20 "$host" true; then
+        Say bad "dc move cannot connect to $host yet."
+        exit 1
+    fi
+    Say ok "$host accepts this key. dc move can connect."
 }
 
 PrintBashrc() {
