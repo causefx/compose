@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.34
-### ChangeNotes: nextport starts at STARTING_PORT or 5000.
+VERSION=v1.7.35
+### ChangeNotes: tidy keeps env categories together and sorts ports.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -2510,6 +2510,13 @@ Create() {
     exit
 }
 
+TidyFixedHeader() {
+    case "$1" in
+        "Script Settings"|"Universal Settings"|"User Specific Settings"|"Ports"|"Other") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 TidyEnvWriteSection() {
     local out="$1" title="$2"
     shift 2
@@ -2522,16 +2529,19 @@ TidyEnvWriteSection() {
         fi
         printf '%s=%s\n' "$key" "${ENV_TIDY_VAL[$key]}" >>"$out"
         unset "ENV_TIDY_VAL[$key]"
+        unset "ENV_TIDY_CAT[$key]"
     done
     [[ "$wrote" -eq 1 ]] && printf '\n' >>"$out"
 }
 
 TidyEnv() {
-    local line key val sort_key out answer
-    local top=0 ports=0 other=0 dups=0
-    local -a port_rows=() other_keys=()
+    local line key val sort_key out answer title current="" i j wrote
+    local top=0 ports=0 cats=0 other=0 dups=0
+    local -a port_rows=() other_keys=() cat_order=() order_cat=() order_key=()
     local -A ENV_TIDY_VAL=()
+    local -A ENV_TIDY_CAT=()
     local -A seen=()
+    local -A cat_seen=()
 
     Banner "tidy"
     if [[ ! -f "$envFile" ]]; then
@@ -2544,7 +2554,27 @@ TidyEnv() {
     fi
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line//$'\r'/}"
-        [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        if [[ -z "$line" ]]; then
+            continue
+        fi
+        if [[ "$line" == \#* ]]; then
+            title="${line#\#}"
+            title="${title#"${title%%[![:space:]]*}"}"
+            title="${title%"${title##*[![:space:]]}"}"
+            if [[ -z "$title" ]] || TidyFixedHeader "$title"; then
+                current=""
+            else
+                current="$title"
+                if [[ -z "${cat_seen[$current]+x}" ]]; then
+                    cat_seen["$current"]=1
+                    cat_order+=("$current")
+                fi
+            fi
+            continue
+        fi
+        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
         key="${BASH_REMATCH[1]}"
         val="${BASH_REMATCH[2]}"
         if [[ -n "${seen[$key]+x}" ]]; then
@@ -2552,6 +2582,9 @@ TidyEnv() {
         fi
         seen["$key"]=1
         ENV_TIDY_VAL["$key"]="$val"
+        ENV_TIDY_CAT["$key"]="$current"
+        order_cat+=("$current")
+        order_key+=("$key")
     done < "$envFile"
     if [[ ${#ENV_TIDY_VAL[@]} -eq 0 ]]; then
         Say info "Env file has no variables."
@@ -2574,8 +2607,7 @@ TidyEnv() {
             sort_key="${val%%[!0-9]*}"
             [[ "$sort_key" =~ ^[0-9]+$ ]] || sort_key=999999
             port_rows+=("$(printf '%06d\t%s' "$sort_key" "$key")")
-        else
-            other_keys+=("$key")
+            unset "ENV_TIDY_CAT[$key]"
         fi
     done
 
@@ -2590,6 +2622,34 @@ TidyEnv() {
         printf '\n' >>"$out"
     fi
 
+    for title in "${cat_order[@]}"; do
+        wrote=0
+        for i in "${!order_key[@]}"; do
+            key="${order_key[$i]}"
+            [[ "${ENV_TIDY_CAT[$key]:-}" == "$title" ]] || continue
+            [[ -n "${ENV_TIDY_VAL[$key]+x}" ]] || continue
+            for ((j=i+1; j<${#order_key[@]}; j++)); do
+                if [[ "${order_key[$j]}" == "$key" ]]; then
+                    continue 2
+                fi
+            done
+            if [[ "$wrote" -eq 0 ]]; then
+                printf '# %s\n' "$title" >>"$out"
+                wrote=1
+            fi
+            printf '%s=%s\n' "$key" "${ENV_TIDY_VAL[$key]}" >>"$out"
+            unset "ENV_TIDY_VAL[$key]"
+            unset "ENV_TIDY_CAT[$key]"
+        done
+        if [[ "$wrote" -eq 1 ]]; then
+            printf '\n' >>"$out"
+            cats=$((cats + 1))
+        fi
+    done
+
+    for key in "${!ENV_TIDY_VAL[@]}"; do
+        other_keys+=("$key")
+    done
     if [[ ${#other_keys[@]} -gt 0 ]]; then
         printf '# Other\n' >>"$out"
         while IFS= read -r key; do
@@ -2602,6 +2662,7 @@ TidyEnv() {
 
     Say info "Top settings: $top"
     Say info "Ports: $ports"
+    Say info "Categories: $cats"
     Say info "Other: $other"
     if [[ "$dups" -gt 0 ]]; then
         Say warn "Duplicate keys kept the last value: $dups"
@@ -2610,22 +2671,18 @@ TidyEnv() {
     if [[ "$answer" != [yY] ]]; then
         rm -f "$out"
         Say info "Left $envFile unchanged."
-        unset ENV_TIDY_VAL
         return 0
     fi
     cp "$envFile" "${envFile}.bak" || {
         rm -f "$out"
         Say bad "Could not write ${envFile}.bak."
-        unset ENV_TIDY_VAL
         exit 1
     }
     if ! mv "$out" "$envFile"; then
         rm -f "$out"
         Say bad "Could not rewrite $envFile."
-        unset ENV_TIDY_VAL
         exit 1
     fi
-    unset ENV_TIDY_VAL
     Say ok "Organized $envFile."
     Say info "Previous file saved as ${envFile}.bak."
 }
