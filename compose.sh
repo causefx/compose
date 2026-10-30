@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.30
-### ChangeNotes: key remembers a short host name for move.
+VERSION=v1.7.31
+### ChangeNotes: hosts lists the short names ready for move.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -142,6 +142,7 @@ update|Update script when a new version exists|update
 repull|Re-download repo files|repull
 bashrc|Add the dc.bash source line to ~/.bashrc|bashrc
 key|Create an SSH key and install it on a host|key
+hosts|List hosts ready for moving services|hosts
 path|Print script and APPS paths|path
 help|This help menu|help
 # @end
@@ -385,6 +386,7 @@ CheckAction() {
             env) EditFile env ;;
             bashrc) PrintBashrc ;;
             key) Key ;;
+            hosts) Hosts ;;
             help) Help ;;
             *)
                 Say bad "Unknown handler: $handler"
@@ -1835,6 +1837,62 @@ RememberHost() {
     fi
     SaveHostUser "$short" "$user" || return 1
     Say info "$short connects as $full."
+}
+
+ComposeHostNames() {
+    local file="$HOME/.ssh/compose-hosts" short user
+    local -A seen=()
+    if [[ -f "$file" ]]; then
+        while read -r short user; do
+            [[ -n "$short" && -n "$user" ]] || continue
+            MoveHostOk "$short" || continue
+            [[ -n "${seen[$short]+x}" ]] && continue
+            seen["$short"]=1
+            printf '%s\n' "$short"
+        done < "$file"
+    fi
+    [[ ${#seen[@]} -gt 0 ]]
+}
+
+Hosts() {
+    local short full name_w=8 full_w=12 count=0
+    local -a names=() targets=()
+    local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=5 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
+
+    Banner "hosts"
+    if [[ -z "${HOME:-}" ]]; then
+        Say bad "HOME is not set."
+        exit 1
+    fi
+    while IFS= read -r short; do
+        [[ -n "$short" ]] || continue
+        full="$(ResolveHost "$short")"
+        names+=("$short")
+        targets+=("$full")
+        (( ${#short} > name_w )) && name_w=${#short}
+        (( ${#full} > full_w )) && full_w=${#full}
+    done < <(ComposeHostNames)
+    count=${#names[@]}
+    if [[ "$count" -eq 0 ]]; then
+        Say info "No hosts yet."
+        Say info "dc key root@hostname"
+        return 0
+    fi
+    printf "  %b%-*s  %-*s  %s%b\n" "$c_dim" "$name_w" "host" "$full_w" "connects as" "move" "$c_reset"
+    for ((i=0; i<count; i++)); do
+        short="${names[$i]}"
+        full="${targets[$i]}"
+        if ! command -v ssh >/dev/null 2>&1; then
+            printf "  %b·%b  %-*s  %-*s  %b?%b\n" "$c_teal" "$c_reset" "$name_w" "$short" "$full_w" "$full" "$c_yellow" "$c_reset"
+            continue
+        fi
+        if ssh "${ssh_opts[@]}" "$full" true >/dev/null 2>&1; then
+            printf "  %b✔%b  %-*s  %-*s  %bok%b\n" "$c_green" "$c_reset" "$name_w" "$short" "$full_w" "$full" "$c_green" "$c_reset"
+        else
+            printf "  %b✘%b  %-*s  %-*s  %bfail%b\n" "$c_red" "$c_reset" "$name_w" "$short" "$full_w" "$full" "$c_red" "$c_reset"
+        fi
+    done
+    Say info "dc move SERVICE ${names[0]}"
 }
 
 DeleteMovedService() {
