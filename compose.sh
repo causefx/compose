@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.35
-### ChangeNotes: tidy keeps env categories together and sorts ports.
+VERSION=v1.7.36
+### ChangeNotes: restore puts back the env file from tidy.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -138,6 +138,7 @@ receive|Receive a service from another host|receive
 edit|Edit service|edit
 env|Edit env file|env
 tidy|Organize the env file and sort ports|tidy
+restore|Restore .env from the tidy backup|restore
 # @group Script
 version|Display version|version
 update|Update script when a new version exists|update
@@ -388,6 +389,7 @@ CheckAction() {
             edit) EditFile "$folder" ;;
             env) EditFile env ;;
             tidy) TidyEnv ;;
+            restore) RestoreEnv ;;
             bashrc) PrintBashrc ;;
             key) Key ;;
             hosts) Hosts ;;
@@ -2685,6 +2687,43 @@ TidyEnv() {
     fi
     Say ok "Organized $envFile."
     Say info "Previous file saved as ${envFile}.bak."
+}
+
+RestoreEnv() {
+    local bak="${envFile}.bak" answer
+
+    Banner "restore"
+    if [[ ! -f "$bak" ]]; then
+        Say bad "No backup at $bak."
+        Say info "dc tidy creates that file before it rewrites .env."
+        exit 1
+    fi
+    if [[ ! -r "$bak" ]]; then
+        Say bad "Cannot read $bak."
+        exit 1
+    fi
+    Say info "Backup: $bak"
+    if [[ -f "$envFile" ]]; then
+        Say warn "This replaces $envFile."
+    fi
+    answer="$(Ask "Restore .env from the tidy backup? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left $envFile unchanged."
+        return 0
+    fi
+    if [[ -e "$envFile" && ! -w "$envFile" ]]; then
+        Say bad "Cannot write $envFile."
+        exit 1
+    fi
+    if [[ -e "$(dirname "$envFile")" && ! -w "$(dirname "$envFile")" ]]; then
+        Say bad "Cannot write in $(dirname "$envFile")."
+        exit 1
+    fi
+    cp "$bak" "$envFile" || {
+        Say bad "Could not restore $envFile."
+        exit 1
+    }
+    Say ok "Restored $envFile from $bak."
 }
 
 MarkUsedPort() {
