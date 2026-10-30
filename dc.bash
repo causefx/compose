@@ -7,7 +7,7 @@ dc() {
     shift || true
     local service=""
     local -a extra=()
-    if [[ "$action" != "key" && $# -gt 0 && "$1" != -* ]]; then
+    if [[ "$action" != "key" && "$action" != "nextport" && $# -gt 0 && "$1" != -* ]]; then
         service="$1"
         shift
     fi
@@ -66,7 +66,7 @@ _dc_completions() {
 
     if [[ "$COMP_CWORD" -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
-    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" ]]; then
+    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
     fi
 }

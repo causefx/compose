@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.32
-### ChangeNotes: tidy organizes the env file and sorts ports.
+VERSION=v1.7.34
+### ChangeNotes: nextport starts at STARTING_PORT or 5000.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -125,6 +125,7 @@ images|List compose images and tags|images
 pull|Pull images and skip ones already current|pull
 config|Render compose file(s)|compose|config
 ports|Show ports from ENV file|ports
+nextport|Show the next free host port|nextport
 df|Show Docker disk usage|df
 prune|Remove unused Docker data|prune
 # @group Services
@@ -383,6 +384,7 @@ CheckAction() {
                 Update
                 ;;
             ports) CheckPorts ;;
+            nextport) NextPort ;;
             edit) EditFile "$folder" ;;
             env) EditFile env ;;
             tidy) TidyEnv ;;
@@ -2558,7 +2560,7 @@ TidyEnv() {
 
     out="$(mktemp)" || exit 1
     TidyEnvWriteSection "$out" "Script Settings" \
-        APPS COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE
+        APPS COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE STARTING_PORT
     TidyEnvWriteSection "$out" "Universal Settings" \
         COMPOSE_VERSION COMPOSE_HTTP_TIMEOUT DOCKER_CLIENT_TIMEOUT \
         DOCKERLOGGING_MAXFILE DOCKERLOGGING_MAXSIZE TIME DOCKER_SOCK
@@ -2626,6 +2628,103 @@ TidyEnv() {
     unset ENV_TIDY_VAL
     Say ok "Organized $envFile."
     Say info "Previous file saved as ${envFile}.bak."
+}
+
+MarkUsedPort() {
+    local -n _ports=$1
+    local raw="$2" port
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    [[ "$raw" =~ ^([0-9]+) ]] || return 1
+    port="${BASH_REMATCH[1]}"
+    [[ "$port" -ge 1 && "$port" -le 65535 ]] || return 1
+    _ports["$port"]=1
+}
+
+LoadEnvPorts() {
+    local name=$1
+    local key value
+    [[ -f "$envFile" ]] || return 0
+    while IFS='=' read -r key value; do
+        key="${key%"${key##*[![:space:]]}"}"
+        [[ "$key" == "STARTING_PORT" ]] && continue
+        [[ "$key" == *_PORT_* && "$key" != \#* ]] || continue
+        MarkUsedPort "$name" "$value"
+    done < "$envFile"
+}
+
+EnvStartingPort() {
+    local raw="${STARTING_PORT:-5000}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    if [[ "$raw" =~ ^[0-9]+$ && "$raw" -ge 1 && "$raw" -le 65535 ]]; then
+        printf '%s\n' "$raw"
+        return 0
+    fi
+    printf '5000\n'
+}
+
+LoadListeningPorts() {
+    local name=$1
+    local line
+    if command -v ss >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            [[ "$line" =~ :([0-9]+)([[:space:]]|$) ]] || continue
+            MarkUsedPort "$name" "${BASH_REMATCH[1]}"
+        done < <(ss -H -lnt 2>/dev/null || true)
+        return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        while IFS= read -r line; do
+            [[ "$line" =~ :([0-9]+)[[:space:]] ]] || continue
+            MarkUsedPort "$name" "${BASH_REMATCH[1]}"
+        done < <(netstat -lnt 2>/dev/null || netstat -an 2>/dev/null || true)
+    fi
+}
+
+NextPort() {
+    local floor start="" port
+    local -A used=()
+
+    Banner "nextport"
+    floor="$(EnvStartingPort)"
+    if [[ -n "${folder:-}" && "$folder" != "all" ]]; then
+        if [[ "$folder" =~ ^[0-9]+$ && ${#EXTRA_ARGS[@]} -eq 0 ]]; then
+            start="$folder"
+        else
+            Say bad "Nextport takes an optional start port."
+            Say info "dc nextport"
+            Say info "dc nextport 8080"
+            exit 1
+        fi
+    elif [[ ${#EXTRA_ARGS[@]} -gt 1 ]]; then
+        Say bad "Nextport takes an optional start port."
+        Say info "dc nextport"
+        Say info "dc nextport 8080"
+        exit 1
+    elif [[ ${#EXTRA_ARGS[@]} -eq 1 ]]; then
+        start="${EXTRA_ARGS[0]}"
+    fi
+    if [[ -z "$start" ]]; then
+        start="$floor"
+    elif [[ ! "$start" =~ ^[0-9]+$ || "$start" -lt 1 || "$start" -gt 65535 ]]; then
+        Say bad "Start port must be 1 to 65535."
+        exit 1
+    elif [[ "$start" -lt "$floor" ]]; then
+        Say bad "Start port must be $floor or higher."
+        Say info "Set STARTING_PORT in .env to change the floor."
+        exit 1
+    fi
+    LoadEnvPorts used
+    LoadListeningPorts used
+    for ((port=start; port<=65535; port++)); do
+        [[ -n "${used[$port]+x}" ]] && continue
+        Say ok "$port"
+        Say info "Free from .env and listening ports."
+        return 0
+    done
+    Say bad "No free port from $start to 65535."
+    exit 1
 }
 
 CheckPorts() {
