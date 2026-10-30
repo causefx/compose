@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.31
-### ChangeNotes: hosts lists the short names ready for move.
+VERSION=v1.7.32
+### ChangeNotes: tidy organizes the env file and sorts ports.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -136,6 +136,7 @@ move|Move a service to another host|move
 receive|Receive a service from another host|receive
 edit|Edit service|edit
 env|Edit env file|env
+tidy|Organize the env file and sort ports|tidy
 # @group Script
 version|Display version|version
 update|Update script when a new version exists|update
@@ -384,6 +385,7 @@ CheckAction() {
             ports) CheckPorts ;;
             edit) EditFile "$folder" ;;
             env) EditFile env ;;
+            tidy) TidyEnv ;;
             bashrc) PrintBashrc ;;
             key) Key ;;
             hosts) Hosts ;;
@@ -2504,6 +2506,126 @@ Create() {
     Say warn "Disabled until you edit the compose file."
     
     exit
+}
+
+TidyEnvWriteSection() {
+    local out="$1" title="$2"
+    shift 2
+    local key wrote=0
+    for key in "$@"; do
+        [[ -n "${ENV_TIDY_VAL[$key]+x}" ]] || continue
+        if [[ "$wrote" -eq 0 ]]; then
+            printf '# %s\n' "$title" >>"$out"
+            wrote=1
+        fi
+        printf '%s=%s\n' "$key" "${ENV_TIDY_VAL[$key]}" >>"$out"
+        unset "ENV_TIDY_VAL[$key]"
+    done
+    [[ "$wrote" -eq 1 ]] && printf '\n' >>"$out"
+}
+
+TidyEnv() {
+    local line key val sort_key out answer
+    local top=0 ports=0 other=0 dups=0
+    local -a port_rows=() other_keys=()
+    local -A ENV_TIDY_VAL=()
+    local -A seen=()
+
+    Banner "tidy"
+    if [[ ! -f "$envFile" ]]; then
+        Say bad "Env file does not exist: $envFile"
+        exit 1
+    fi
+    if [[ ! -w "$envFile" ]]; then
+        Say bad "Cannot write $envFile."
+        exit 1
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"
+        val="${BASH_REMATCH[2]}"
+        if [[ -n "${seen[$key]+x}" ]]; then
+            dups=$((dups + 1))
+        fi
+        seen["$key"]=1
+        ENV_TIDY_VAL["$key"]="$val"
+    done < "$envFile"
+    if [[ ${#ENV_TIDY_VAL[@]} -eq 0 ]]; then
+        Say info "Env file has no variables."
+        return 0
+    fi
+
+    out="$(mktemp)" || exit 1
+    TidyEnvWriteSection "$out" "Script Settings" \
+        APPS COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE
+    TidyEnvWriteSection "$out" "Universal Settings" \
+        COMPOSE_VERSION COMPOSE_HTTP_TIMEOUT DOCKER_CLIENT_TIMEOUT \
+        DOCKERLOGGING_MAXFILE DOCKERLOGGING_MAXSIZE TIME DOCKER_SOCK
+    TidyEnvWriteSection "$out" "User Specific Settings" \
+        PUID PGID TZ
+    top=$(( ${#seen[@]} - ${#ENV_TIDY_VAL[@]} ))
+
+    for key in "${!ENV_TIDY_VAL[@]}"; do
+        if [[ "$key" == *_PORT_* ]]; then
+            val="${ENV_TIDY_VAL[$key]}"
+            sort_key="${val%%[!0-9]*}"
+            [[ "$sort_key" =~ ^[0-9]+$ ]] || sort_key=999999
+            port_rows+=("$(printf '%06d\t%s' "$sort_key" "$key")")
+        else
+            other_keys+=("$key")
+        fi
+    done
+
+    if [[ ${#port_rows[@]} -gt 0 ]]; then
+        printf '# Ports\n' >>"$out"
+        while IFS=$'\t' read -r sort_key key; do
+            [[ -n "$key" ]] || continue
+            printf '%s=%s\n' "$key" "${ENV_TIDY_VAL[$key]}" >>"$out"
+            unset "ENV_TIDY_VAL[$key]"
+            ports=$((ports + 1))
+        done < <(printf '%s\n' "${port_rows[@]}" | LC_ALL=C sort)
+        printf '\n' >>"$out"
+    fi
+
+    if [[ ${#other_keys[@]} -gt 0 ]]; then
+        printf '# Other\n' >>"$out"
+        while IFS= read -r key; do
+            [[ -n "$key" ]] || continue
+            printf '%s=%s\n' "$key" "${ENV_TIDY_VAL[$key]}" >>"$out"
+            other=$((other + 1))
+        done < <(printf '%s\n' "${other_keys[@]}" | LC_ALL=C sort)
+        printf '\n' >>"$out"
+    fi
+
+    Say info "Top settings: $top"
+    Say info "Ports: $ports"
+    Say info "Other: $other"
+    if [[ "$dups" -gt 0 ]]; then
+        Say warn "Duplicate keys kept the last value: $dups"
+    fi
+    answer="$(Ask "Rewrite $envFile? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        rm -f "$out"
+        Say info "Left $envFile unchanged."
+        unset ENV_TIDY_VAL
+        return 0
+    fi
+    cp "$envFile" "${envFile}.bak" || {
+        rm -f "$out"
+        Say bad "Could not write ${envFile}.bak."
+        unset ENV_TIDY_VAL
+        exit 1
+    }
+    if ! mv "$out" "$envFile"; then
+        rm -f "$out"
+        Say bad "Could not rewrite $envFile."
+        unset ENV_TIDY_VAL
+        exit 1
+    fi
+    unset ENV_TIDY_VAL
+    Say ok "Organized $envFile."
+    Say info "Previous file saved as ${envFile}.bak."
 }
 
 CheckPorts() {
