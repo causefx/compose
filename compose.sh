@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.39
-### ChangeNotes: scheduled pull runs without asking questions.
+VERSION=v1.7.40
+### ChangeNotes: docs shows the command reference.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -160,6 +160,7 @@ key|Create an SSH key and install it on a host|key
 hosts|List hosts ready for moving services|hosts
 path|Print script and APPS paths|path
 schedule|Manage scheduled compose actions|schedule
+docs|Show command documentation|docs
 help|This help menu|help
 # @end
 EOF
@@ -183,6 +184,7 @@ Help() {
     printf "  %bexample%b     compose.sh -a move -s plex -- root@other-host\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a key -- root@other-host\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a schedule -- add pull 0 4 * * *\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a docs -- pull\n" "$c_dim" "$c_reset"
     Banner "actions"
     while IFS= read -r line; do
         if [[ "$line" == "# @group "* ]]; then
@@ -408,6 +410,7 @@ CheckAction() {
             key) Key ;;
             hosts) Hosts ;;
             schedule) Schedule ;;
+            docs) Docs ;;
             help) Help ;;
             *)
                 Say bad "Unknown handler: $handler"
@@ -483,6 +486,7 @@ UpdateCurl() {
     compose.sh
     dc.bash
     README.md
+    DOCS.md
     docker-compose.yml
     .env.example
     .gitignore
@@ -3925,6 +3929,88 @@ Schedule() {
             exit 1
             ;;
     esac
+}
+
+DocsFile() {
+    printf '%s\n' "$SCRIPT_WORKING_DIR/DOCS.md"
+}
+
+DocsTopics() {
+    local file topic
+    file="$(DocsFile)"
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r topic; do
+        [[ -n "$topic" ]] && printf '%s\n' "$topic"
+    done < <(grep -E '^### [a-z0-9]+$' "$file" | sed 's/^### //')
+}
+
+DocsShowSection() {
+    local file="$1" topic="$2"
+    local line in=0 found=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "### $topic" ]]; then
+            in=1
+            found=1
+            printf '%s\n' "$line"
+            continue
+        fi
+        if [[ "$in" -eq 1 ]]; then
+            if [[ "$line" =~ ^###\  || "$line" =~ ^##\  ]]; then
+                break
+            fi
+            printf '%s\n' "$line"
+        fi
+    done < "$file"
+    [[ "$found" -eq 1 ]]
+}
+
+DocsShowFile() {
+    local file="$1"
+    if command -v less >/dev/null 2>&1 && [[ -t 1 ]]; then
+        less -R "$file"
+        return
+    fi
+    if command -v more >/dev/null 2>&1 && [[ -t 1 ]]; then
+        more "$file"
+        return
+    fi
+    cat "$file"
+}
+
+Docs() {
+    local file topic="${EXTRA_ARGS[0]:-}"
+    if [[ -z "$topic" && -n "${folder:-}" && "$folder" != "all" ]]; then
+        topic="$folder"
+    fi
+    if [[ ${#EXTRA_ARGS[@]} -gt 1 ]]; then
+        Say bad "Docs takes an optional topic."
+        Say info "dc docs"
+        Say info "dc docs pull"
+        exit 1
+    fi
+
+    Banner "docs"
+    file="$(DocsFile)"
+    if [[ ! -f "$file" ]]; then
+        Say bad "Documentation file not found: $file"
+        Say info "Run dc repull to download DOCS.md."
+        exit 1
+    fi
+    if [[ -z "$topic" ]]; then
+        Say info "Full reference: $file"
+        Say info "dc docs pull"
+        DocsShowFile "$file"
+        return 0
+    fi
+    topic="${topic,,}"
+    if ! DocsShowSection "$file" "$topic"; then
+        Say bad "No docs for: $topic"
+        Say info "Topics:"
+        DocsTopics | while IFS= read -r line; do
+            printf "  %b·%b  %s\n" "$c_teal" "$c_reset" "$line"
+        done
+        exit 1
+    fi
 }
 
 PrintBashrc() {
