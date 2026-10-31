@@ -2,6 +2,8 @@
 
 Personal bash helper for one-folder-per-service Docker Compose layouts. The short command is `dc`. It wraps `compose.sh`, which lives next to `dc.bash` and your `.env`.
 
+Setup is in [README.md](README.md). Version history is in [CHANGELOG.md](CHANGELOG.md).
+
 ```bash
 dc <action> [service] [-- extra args]
 compose.sh -a <action> [-s service] [-e /path/to/.env] [-- extra args]

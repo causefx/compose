@@ -7,6 +7,7 @@
 !dc.bash
 !README.md
 !DOCS.md
+!CHANGELOG.md
 !docker-compose.yml
 !.env.example
 !LICENSE

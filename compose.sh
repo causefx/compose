@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.40
-### ChangeNotes: docs shows the command reference.
+VERSION=v1.7.41
+### ChangeNotes: README points to DOCS.md and CHANGELOG.md.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -487,6 +487,7 @@ UpdateCurl() {
     dc.bash
     README.md
     DOCS.md
+    CHANGELOG.md
     docker-compose.yml
     .env.example
     .gitignore
