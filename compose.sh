@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.37
-### ChangeNotes: pull lists image updates with the same marks.
+VERSION=v1.7.39
+### ChangeNotes: scheduled pull runs without asking questions.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -51,13 +51,25 @@ Say() {
     printf "  %b%s%b  %s\n" "$color" "$mark" "$c_reset" "$*" >&"$stream"
 }
 
+NonInteractive() {
+    [[ "${COMPOSE_NONINTERACTIVE:-0}" == 1 ]] && return 0
+    [[ ! -t 0 && ! -t 1 ]] && return 0
+    return 1
+}
+
 Ask() {
     local reply
+    if NonInteractive; then
+        printf '%s' ""
+        return 0
+    fi
     printf "  %b?%b  %s " "$c_teal" "$c_reset" "$1" >&2
-    if [[ -r /dev/tty ]]; then
+    if { : </dev/tty >/dev/tty; } 2>/dev/null; then
         IFS= read -r reply </dev/tty || reply=""
-    else
+    elif [[ -t 0 ]]; then
         IFS= read -r reply || reply=""
+    else
+        reply=""
     fi
     printf '%s' "$reply"
 }
@@ -147,6 +159,7 @@ bashrc|Add the dc.bash source line to ~/.bashrc|bashrc
 key|Create an SSH key and install it on a host|key
 hosts|List hosts ready for moving services|hosts
 path|Print script and APPS paths|path
+schedule|Manage scheduled compose actions|schedule
 help|This help menu|help
 # @end
 EOF
@@ -169,6 +182,7 @@ Help() {
     printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a move -s plex -- root@other-host\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a key -- root@other-host\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a schedule -- add pull 0 4 * * *\n" "$c_dim" "$c_reset"
     Banner "actions"
     while IFS= read -r line; do
         if [[ "$line" == "# @group "* ]]; then
@@ -393,6 +407,7 @@ CheckAction() {
             bashrc) PrintBashrc ;;
             key) Key ;;
             hosts) Hosts ;;
+            schedule) Schedule ;;
             help) Help ;;
             *)
                 Say bad "Unknown handler: $handler"
@@ -3412,25 +3427,32 @@ ShowImages() {
         return 0
     fi
 
-    if [ ${#enabled_refs[@]} -gt 0 ]; then
-        if [ -n "$folder" ]; then
+    if NonInteractive; then
+        if [ ${#enabled_refs[@]} -gt 0 ]; then
             pull_enabled=1
-        else
-            answer="$(Ask "Pull ${#enabled_refs[@]} unique image(s) from enabled services? [Y/n]")"
-            if [[ -z "$answer" || "$answer" == [yY] ]]; then
+        fi
+        Say info "Non-interactive: pulling enabled service images only."
+    else
+        if [ ${#enabled_refs[@]} -gt 0 ]; then
+            if [ -n "$folder" ]; then
                 pull_enabled=1
+            else
+                answer="$(Ask "Pull ${#enabled_refs[@]} unique image(s) from enabled services? [Y/n]")"
+                if [[ -z "$answer" || "$answer" == [yY] ]]; then
+                    pull_enabled=1
+                fi
             fi
         fi
-    fi
 
-    if [ ${#disabled_only_refs[@]} -gt 0 ]; then
-        if [ "$pull_enabled" -eq 1 ]; then
-            answer="$(Ask "Also pull ${#disabled_only_refs[@]} image(s) from disabled services? [y/N]")"
-        else
-            answer="$(Ask "Pull ${#disabled_only_refs[@]} image(s) from disabled services? [y/N]")"
-        fi
-        if [[ "$answer" == [yY] ]]; then
-            include_disabled=1
+        if [ ${#disabled_only_refs[@]} -gt 0 ]; then
+            if [ "$pull_enabled" -eq 1 ]; then
+                answer="$(Ask "Also pull ${#disabled_only_refs[@]} image(s) from disabled services? [y/N]")"
+            else
+                answer="$(Ask "Pull ${#disabled_only_refs[@]} image(s) from disabled services? [y/N]")"
+            fi
+            if [[ "$answer" == [yY] ]]; then
+                include_disabled=1
+            fi
         fi
     fi
 
@@ -3688,6 +3710,221 @@ BashrcHasSource() {
         esac
     done < "$file"
     return 1
+}
+
+ScheduleAllowed() {
+    case "$1" in
+        pull|update|tidy|issue|images|ports|df|hosts|nextport|version|list|ps) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+ScheduleMarker() {
+    printf 'compose-schedule:%s' "$1"
+}
+
+ScheduleLogFile() {
+    printf '%s/logs/schedule-%s.log' "$SCRIPT_WORKING_DIR" "$1"
+}
+
+CronQuote() {
+    local s="$1"
+    printf "'%s'" "${s//\'/\'\\\'\'}"
+}
+
+ScheduleCronExprOk() {
+    local field
+    [[ $# -eq 5 ]] || return 1
+    for field in "$@"; do
+        [[ "$field" =~ ^[0-9A-Za-z*/,-]+$ ]] || return 1
+    done
+    return 0
+}
+
+ReadCrontab() {
+    crontab -l 2>/dev/null || true
+}
+
+WriteCrontab() {
+    local tmp
+    tmp="$(mktemp)" || return 1
+    cat >"$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    crontab "$tmp"
+    local status=$?
+    rm -f "$tmp"
+    return "$status"
+}
+
+ScheduleLine() {
+    local action="$1"
+    shift
+    local expr="$*"
+    local bash_bin log marker
+    bash_bin="$(command -v bash)"
+    [[ -n "$bash_bin" ]] || bash_bin="/bin/bash"
+    log="$(ScheduleLogFile "$action")"
+    marker="$(ScheduleMarker "$action")"
+    printf '%s cd %s && COMPOSE_NONINTERACTIVE=1 %s %s -e %s -a %s >>%s 2>&1 # %s\n' \
+        "$expr" \
+        "$(CronQuote "$SCRIPT_WORKING_DIR")" \
+        "$(CronQuote "$bash_bin")" \
+        "$(CronQuote "$SCRIPT_PATH")" \
+        "$(CronQuote "$envFile")" \
+        "$(CronQuote "$action")" \
+        "$(CronQuote "$log")" \
+        "$marker"
+}
+
+ScheduleList() {
+    local line action expr count=0
+    local -a lines=()
+    while IFS= read -r line; do
+        [[ "$line" == *" # compose-schedule:"* ]] || continue
+        lines+=("$line")
+    done < <(ReadCrontab)
+    if [[ ${#lines[@]} -eq 0 ]]; then
+        Say info "No scheduled actions."
+        Say info "dc schedule add pull 0 4 * * *"
+        return 0
+    fi
+    for line in "${lines[@]}"; do
+        action="${line##* # compose-schedule:}"
+        action="${action%%[[:space:]]*}"
+        expr="${line%% cd *}"
+        expr="${expr%"${expr##*[![:space:]]}"}"
+        printf "  %b✔%b  %b%-10s%b  %s\n" "$c_green" "$c_reset" "$c_teal" "$action" "$c_reset" "$expr"
+        Say info "log $(ScheduleLogFile "$action")"
+        count=$((count + 1))
+    done
+    Say ok "$count scheduled action(s)."
+}
+
+ScheduleAdd() {
+    local action="$1"
+    shift
+    local expr line marker answer existing=0
+    local -a keep=() fields=("$@")
+
+    if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
+        Say bad "Schedule needs an allowed action."
+        Say info "pull update tidy issue images ports df hosts nextport version list ps"
+        Say info "dc schedule add pull 0 4 * * *"
+        exit 1
+    fi
+    if ! ScheduleCronExprOk "${fields[@]}"; then
+        Say bad "Cron needs five fields."
+        Say info "dc schedule add pull 0 4 * * *"
+        exit 1
+    fi
+    expr="${fields[*]}"
+    marker="$(ScheduleMarker "$action")"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == *" # $marker" ]]; then
+            existing=1
+            continue
+        fi
+        keep+=("$line")
+    done < <(ReadCrontab)
+    if [[ "$existing" -eq 1 ]]; then
+        answer="$(Ask "Replace schedule for $action? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left crontab unchanged."
+            return 0
+        fi
+    else
+        answer="$(Ask "Schedule $action at '$expr'? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left crontab unchanged."
+            return 0
+        fi
+    fi
+    mkdir -p "$SCRIPT_WORKING_DIR/logs" || {
+        Say bad "Could not create $SCRIPT_WORKING_DIR/logs."
+        exit 1
+    }
+    keep+=("$(ScheduleLine "$action" "${fields[@]}")")
+    if ! printf '%s\n' "${keep[@]}" | WriteCrontab; then
+        Say bad "Could not update crontab."
+        exit 1
+    fi
+    Say ok "Scheduled $action: $expr"
+    Say info "log $(ScheduleLogFile "$action")"
+}
+
+ScheduleRemove() {
+    local action="$1" line marker found=0 answer
+    local -a keep=()
+
+    if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
+        Say bad "Remove needs a scheduled action name."
+        Say info "dc schedule remove pull"
+        exit 1
+    fi
+    marker="$(ScheduleMarker "$action")"
+    while IFS= read -r line; do
+        if [[ "$line" == *" # $marker" ]]; then
+            found=1
+            continue
+        fi
+        keep+=("$line")
+    done < <(ReadCrontab)
+    if [[ "$found" -eq 0 ]]; then
+        Say info "No schedule for $action."
+        return 0
+    fi
+    answer="$(Ask "Remove schedule for $action? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left crontab unchanged."
+        return 0
+    fi
+    if [[ ${#keep[@]} -eq 0 ]]; then
+        if ! WriteCrontab </dev/null; then
+            # empty crontab: crontab -r is clearer on some systems
+            crontab -r 2>/dev/null || true
+        fi
+    else
+        if ! printf '%s\n' "${keep[@]}" | WriteCrontab; then
+            Say bad "Could not update crontab."
+            exit 1
+        fi
+    fi
+    Say ok "Removed schedule for $action."
+}
+
+Schedule() {
+    local sub="${EXTRA_ARGS[0]:-list}"
+
+    Banner "schedule"
+    if ! command -v crontab >/dev/null 2>&1; then
+        Say bad "crontab is required."
+        exit 1
+    fi
+    case "$sub" in
+        list|"")
+            ScheduleList
+            ;;
+        add)
+            ScheduleAdd "${EXTRA_ARGS[@]:1}"
+            ;;
+        remove|rm)
+            if [[ ${#EXTRA_ARGS[@]} -ne 2 ]]; then
+                Say bad "Remove needs one action."
+                Say info "dc schedule remove pull"
+                exit 1
+            fi
+            ScheduleRemove "${EXTRA_ARGS[1]}"
+            ;;
+        *)
+            Say bad "Use list, add, or remove."
+            Say info "dc schedule"
+            Say info "dc schedule add pull 0 4 * * *"
+            Say info "dc schedule remove pull"
+            exit 1
+            ;;
+    esac
 }
 
 PrintBashrc() {

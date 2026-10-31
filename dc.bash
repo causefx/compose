@@ -7,7 +7,7 @@ dc() {
     shift || true
     local service=""
     local -a extra=()
-    if [[ "$action" != "key" && "$action" != "nextport" && $# -gt 0 && "$1" != -* ]]; then
+    if [[ "$action" != "key" && "$action" != "nextport" && "$action" != "schedule" && $# -gt 0 && "$1" != -* ]]; then
         service="$1"
         shift
     fi
@@ -66,8 +66,12 @@ _dc_completions() {
 
     if [[ "$COMP_CWORD" -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
+    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" == "schedule" ]]; then
+        COMPREPLY=( $(compgen -W "list add remove" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
+    elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "schedule" && ( "${COMP_WORDS[2]}" == "add" || "${COMP_WORDS[2]}" == "remove" ) ]]; then
+        COMPREPLY=( $(compgen -W "pull update tidy issue images ports df hosts nextport version list ps" -- "$cur") )
     fi
 }
 
