@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.36
-### ChangeNotes: restore puts back the env file from tidy.
+VERSION=v1.7.37
+### ChangeNotes: pull lists image updates with the same marks.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -3515,14 +3515,18 @@ ShowImages() {
     Say ok "${current_count} image(s) already match the registry."
     if [[ "$missing_count" -gt 0 ]]; then
         Say warn "${missing_count} image(s) stay on disk because that tag is no longer on the registry:"
-        printf '    %s\n' "${missing_refs[@]}"
+        for img_ref in "${missing_refs[@]}"; do
+            printf "  %b·%b  %s\n" "$c_yellow" "$c_reset" "$img_ref"
+        done
     fi
     if [[ "$stale_count" -eq 0 ]]; then
         Say ok "Nothing to pull."
         return 0
     fi
     Say warn "${stale_count} image(s) have updates:"
-    printf '    %s\n' "${stale_refs[@]}"
+    for img_ref in "${stale_refs[@]}"; do
+        printf "  %b↓%b  %s\n" "$c_yellow" "$c_reset" "$img_ref"
+    done
 
     total=$stale_count
     index=1

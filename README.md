@@ -67,6 +67,7 @@ The stub sets `network_mode: bridge`. Comment that line out when you add another
 
 ## Changes
 
+### 1.7.37 pull lists image updates with the same marks
 ### 1.7.36 restore puts back the env file from tidy
 ### 1.7.35 tidy keeps env categories together and sorts ports
 ### 1.7.34 nextport starts at STARTING_PORT or 5000
