@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.47
-### ChangeNotes: list shows whether each service has an env file.
+VERSION=v1.7.48
+### ChangeNotes: list env dash no longer breaks printf.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -577,10 +577,10 @@ ServiceEnvLabel() {
     local f
     while IFS= read -r f; do
         [[ -n "$f" ]] || continue
-        printf 'yes\n'
+        printf '%s\n' "yes"
         return 0
     done < <(EnvFilesInDir "$dir")
-    printf '-\n'
+    printf '%s\n' "-"
 }
 
 List() {
