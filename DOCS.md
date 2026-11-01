@@ -9,7 +9,7 @@ dc <action> [service] [-- extra args]
 compose.sh -a <action> [-s service] [-e /path/to/.env] [-- extra args]
 ```
 
-Tab completion lists actions first, then `all` and service folder names from `APPS`.
+Tab completion lists actions first, then `all` and service folder names from `APPS`. For `dc move SERVICE`, the next word completes short host names from `~/.ssh/compose-hosts`.
 
 ---
 
@@ -415,7 +415,7 @@ Flow:
 6. Remote `receive` writes the folder disabled under `APPS`, or under `ARCHIVE` when the source was archived; merges missing `.env` keys
 7. On APPS sources: disable locally if it was enabled; ask whether to delete the local folder. On archived sources: ask whether to remove from this archive.
 
-Both hosts need a current script (protocol `COMPOSE-MOVE 2`). `dc key root@host` can remember a short name so later moves use `dc move plex host`. Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
+Both hosts need a current script (protocol `COMPOSE-MOVE 2`). `dc key root@host` can remember a short name so later moves use `dc move plex host` (tab-completes those names). Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
 
 Does not copy: bind mounts outside the service folder, named volumes, or the image (the other host pulls on start after unarchive/enable).
 

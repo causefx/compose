@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.58
-### ChangeNotes: move keeps archived services archived.
+VERSION=v1.7.59
+### ChangeNotes: move completes remembered host names.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"

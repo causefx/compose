@@ -66,8 +66,20 @@ _dc_archive_dir() {
     printf '%s' "$apps/.archive"
 }
 
+_dc_compose_hosts() {
+    local file="$HOME/.ssh/compose-hosts" short user
+    local opts=""
+
+    [[ -f "$file" ]] || return 0
+    while read -r short user; do
+        [[ -n "$short" ]] || continue
+        opts+=" $short"
+    done < "$file"
+    printf '%s' "${opts# }"
+}
+
 _dc_completions() {
-    local cur opts_a opts_s opts_arch apps archive dir name
+    local cur opts_a opts_s opts_arch opts_hosts apps archive dir name
     cur="${COMP_WORDS[COMP_CWORD]}"
 
     opts_a="$(awk '
@@ -106,6 +118,9 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "$opts_s ${opts_arch#all }" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
+    elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "move" ]]; then
+        opts_hosts="$(_dc_compose_hosts)"
+        COMPREPLY=( $(compgen -W "$opts_hosts" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then
         COMPREPLY=( $(compgen -W "values" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "schedule" && ( "${COMP_WORDS[2]}" == "add" || "${COMP_WORDS[2]}" == "remove" ) ]]; then

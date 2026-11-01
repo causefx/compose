@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.59 move completes remembered host names
 ### 1.7.58 move keeps archived services archived
 ### 1.7.57 list paints archived status correctly
 ### 1.7.56 archive and unarchive disabled services
