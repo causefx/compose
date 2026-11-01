@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.54
-### ChangeNotes: where shows which services use an env var.
+VERSION=v1.7.55
+### ChangeNotes: where keeps the env var name case.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -230,7 +230,10 @@ fi
 
 LowerCaseArguments() {
     action="${action,,}"
-    folder="${folder,,}"
+    # where takes an env var name; keep its case (MEDIA ≠ media).
+    if [[ "$action" != "where" ]]; then
+        folder="${folder,,}"
+    fi
 }
 
 
@@ -1926,7 +1929,10 @@ Where() {
     local defined=""
 
     Banner "where"
-    var="${EXTRA_ARGS[0]:-}"
+    var="${WHERE_VAR:-}"
+    if [[ -z "$var" ]]; then
+        var="${EXTRA_ARGS[0]:-}"
+    fi
     if [[ -z "$var" && -n "${folder:-}" && "$folder" != "all" ]]; then
         var="$folder"
     fi
@@ -4542,6 +4548,13 @@ CheckEnvVariables;
 if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "path" ]]; then
     Path
     exit 0
+fi
+WHERE_VAR=""
+if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "where" ]]; then
+    WHERE_VAR="${EXTRA_ARGS[0]:-}"
+    if [[ -z "$WHERE_VAR" && -n "${folder:-}" && "${folder,,}" != "all" ]]; then
+        WHERE_VAR="$folder"
+    fi
 fi
 LowerCaseArguments;
 if [[ "$action" == "receive" ]]; then
