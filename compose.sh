@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.61
-### ChangeNotes: move checks pack permissions before confirm.
+VERSION=v1.7.62
+### ChangeNotes: backups go in a .backup folder.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -531,6 +531,39 @@ RelaunchUpdated() {
   exit 1
 }
 
+# Directory for .bak files next to a path (…/.backup).
+BackupDirFor() {
+    local file="$1"
+    printf '%s/.backup\n' "$(dirname "$file")"
+}
+
+# Path for a backup copy: dir/.backup/basename.bak
+BackupPathFor() {
+    local file="$1"
+    local bdir
+    bdir="$(BackupDirFor "$file")"
+    mkdir -p "$bdir" || return 1
+    printf '%s/%s.bak\n' "$bdir" "$(basename "$file")"
+}
+
+# Prefer .backup/name.bak; fall back to legacy name.bak beside the file.
+ResolveBackupPath() {
+    local file="$1"
+    local modern legacy
+    modern="$(BackupDirFor "$file")/$(basename "$file").bak"
+    legacy="${file}.bak"
+    if [[ -f "$modern" ]]; then
+        printf '%s\n' "$modern"
+        return 0
+    fi
+    if [[ -f "$legacy" ]]; then
+        printf '%s\n' "$legacy"
+        return 0
+    fi
+    printf '%s\n' "$modern"
+    return 1
+}
+
 UpdateCurl() {
   local -a repo_files=(
     compose.sh
@@ -544,7 +577,7 @@ UpdateCurl() {
     LICENSE
   )
   local -a tmps=()
-  local name tmp dest i
+  local name tmp dest bak i
 
   if [[ -z "$(builtin type -P curl)" && -z "$(builtin type -P wget)" ]]; then
     Say bad "curl/wget not available. Download the update manually: $GITHUB"
@@ -565,10 +598,17 @@ UpdateCurl() {
 
   for name in "${repo_files[@]}"; do
     dest="$SCRIPT_WORKING_DIR/$name"
-    if [[ -f "$dest" ]] && ! cp "$dest" "$dest.bak"; then
-      rm -f "${tmps[@]}"
-      Say bad "Could not back up $name. No files were changed."
-      return
+    if [[ -f "$dest" ]]; then
+      bak="$(BackupPathFor "$dest")" || {
+        rm -f "${tmps[@]}"
+        Say bad "Could not create backup folder. No files were changed."
+        return
+      }
+      if ! cp "$dest" "$bak"; then
+        rm -f "${tmps[@]}"
+        Say bad "Could not back up $name. No files were changed."
+        return
+      fi
     fi
   done
 
@@ -578,8 +618,9 @@ UpdateCurl() {
     if ! cp "${tmps[$i]}" "$dest"; then
       for name in "${repo_files[@]}"; do
         dest="$SCRIPT_WORKING_DIR/$name"
-        if [[ -f "$dest.bak" ]]; then
-          cp "$dest.bak" "$dest"
+        bak="$(ResolveBackupPath "$dest" 2>/dev/null || true)"
+        if [[ -n "$bak" && -f "$bak" ]]; then
+          cp "$bak" "$dest"
         fi
       done
       rm -f "${tmps[@]}"
@@ -3594,9 +3635,15 @@ TidyEnv() {
         Say info "Left $envFile unchanged."
         return 0
     fi
-    cp "$envFile" "${envFile}.bak" || {
+    local bak
+    bak="$(BackupPathFor "$envFile")" || {
         rm -f "$out"
-        Say bad "Could not write ${envFile}.bak."
+        Say bad "Could not create backup folder."
+        exit 1
+    }
+    cp "$envFile" "$bak" || {
+        rm -f "$out"
+        Say bad "Could not write $bak."
         exit 1
     }
     if ! mv "$out" "$envFile"; then
@@ -3605,15 +3652,17 @@ TidyEnv() {
         exit 1
     fi
     Say ok "Organized $envFile."
-    Say info "Previous file saved as ${envFile}.bak."
+    Say info "Previous file saved as $bak."
 }
 
 RestoreEnv() {
-    local bak="${envFile}.bak" answer
+    local bak answer
 
     Banner "restore"
+    bak="$(ResolveBackupPath "$envFile" || true)"
     if [[ ! -f "$bak" ]]; then
-        Say bad "No backup at $bak."
+        Say bad "No tidy backup found."
+        Say info "Expected $(BackupDirFor "$envFile")/$(basename "$envFile").bak"
         Say info "dc tidy creates that file before it rewrites .env."
         exit 1
     fi

@@ -24,6 +24,7 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 - **Archived** — disabled service folder moved under `ARCHIVE` (default `APPS/.archive/`); hidden from normal run/list loops until unarchived
 - **Stub** — `STUB_FILE` template used by `create` (usually the repo `docker-compose.yml`)
 - **Env** — project `.env` next to `compose.sh` (never overwritten by update)
+- **Backups** — tidy and non-git update copies go under `.backup/` next to the file (for example `.backup/.env.bak`, `.backup/compose.sh.bak`). Legacy `*.bak` beside the file still works for `restore`.
 - **Service env files** — any `.env`, `.env.*`, or `*.env` in a service folder is also passed to Compose (after the project `.env`). Later files can override earlier keys. Skips `*.bak`, `*.example`, and `*.sample`.
 
 ### Service name
@@ -376,7 +377,7 @@ Rewrite `.env` into clean sections after you confirm:
 5. Your category comments (for example `# Minio`) with their keys kept together
 6. Other — leftover keys, A–Z
 
-Duplicate keys keep the last value. Saves the previous file as `.env.bak`.
+Duplicate keys keep the last value. Saves the previous file as `.backup/.env.bak` (next to the env file’s directory).
 
 ```bash
 dc tidy
@@ -384,7 +385,7 @@ dc tidy
 
 ### restore
 
-Restore `.env` from `.env.bak` created by `tidy`. Asks before replacing.
+Restore `.env` from the tidy backup (`.backup/.env.bak`, or a legacy `.env.bak` beside the file). Asks before replacing.
 
 ```bash
 dc restore

@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.62 backups go in a .backup folder
 ### 1.7.61 move checks pack permissions before confirm
 ### 1.7.60 move reads project and service env files
 ### 1.7.59 move completes remembered host names
