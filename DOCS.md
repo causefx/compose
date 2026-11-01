@@ -23,6 +23,7 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 - **Disabled** — compose file renamed to `COMPOSE_FILE_DISABLED`
 - **Stub** — `STUB_FILE` template used by `create` (usually the repo `docker-compose.yml`)
 - **Env** — project `.env` next to `compose.sh` (never overwritten by update)
+- **Service env files** — any `.env`, `.env.*`, or `*.env` in a service folder is also passed to Compose (after the project `.env`). Later files can override earlier keys. Skips `*.bak`, `*.example`, and `*.sample`.
 
 ### Service name
 
@@ -59,7 +60,7 @@ dc up all
 dc up
 ```
 
-With no service name, asks whether to loop all services. Batch mode prints one brief line per service when nothing changes; Compose output stays on screen when something changes or fails.
+With no service name, asks whether to loop all services. Batch mode prints one brief line per service when nothing changes; Compose output stays on screen when something changes or fails. Loads the project `.env` plus any env files in that service’s folder.
 
 ### down
 

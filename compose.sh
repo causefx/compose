@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.41
-### ChangeNotes: README points to DOCS.md and CHANGELOG.md.
+VERSION=v1.7.42
+### ChangeNotes: compose loads env files from the service folder.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -631,7 +631,7 @@ Toggle() {
                     removeAnswer="$(Ask "Service is running. Stop and remove it? [y/N]")"
                     if [[ "$removeAnswer" == [yY] ]]; then
                         Say warn "Stopping and removing containers."
-                        "${DockerCmd[@]}" --file "$APPS/$folder/$COMPOSE_FILE" --env-file "$envFile" down
+                        RunOneCompose "$APPS/$folder/$COMPOSE_FILE" down
                         Say ok "Service removed."
                     else
                         Say info "Keeping service."
@@ -697,7 +697,7 @@ Remove() {
     fi
     if [[ -n "$compose_file" ]] && CheckStatus "$name"; then
         Say warn "Service is running. Stopping it now."
-        "${DockerCmd[@]}" --file "$compose_file" --env-file "$envFile" down
+        RunOneCompose "$compose_file" down
     fi
 
     removeAnswer="$(Ask "Delete the service folder $target? [y/N]")"
@@ -815,10 +815,53 @@ ComposeSteadyLabel() {
     printf '%s' "$joined"
 }
 
+ServiceEnvFiles() {
+    local compose_file="$1"
+    local dir f had_null=0
+    local -a candidates=() found=()
+    local -A seen=()
+
+    dir="$(dirname "$compose_file")"
+    [[ -d "$dir" ]] || return 0
+    shopt -q nullglob && had_null=1
+    shopt -s nullglob
+    candidates=("$dir"/.env "$dir"/.env.* "$dir"/*.env)
+    [[ "$had_null" -eq 1 ]] || shopt -u nullglob
+    for f in "${candidates[@]}"; do
+        [[ -f "$f" ]] || continue
+        case "$f" in
+            *.bak|*.example|*.sample|*.swp|*~) continue ;;
+        esac
+        if [[ "$f" -ef "$envFile" ]]; then
+            continue
+        fi
+        [[ -n "${seen[$f]+x}" ]] && continue
+        seen["$f"]=1
+        found+=("$f")
+    done
+    if [[ ${#found[@]} -eq 0 ]]; then
+        return 0
+    fi
+    printf '%s\n' "${found[@]}" | LC_ALL=C sort -u
+}
+
+AppendEnvFileArgs() {
+    local -n _env_args=$1
+    local compose_file="$2"
+    local f
+    _env_args+=(--env-file "$envFile")
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        _env_args+=(--env-file "$f")
+    done < <(ServiceEnvFiles "$compose_file")
+}
+
 RunOneCompose() {
     local file="$1"
     shift
-    "${DockerCmd[@]}" --file "$file" --env-file "$envFile" "$@"
+    local -a args=(--file "$file")
+    AppendEnvFileArgs args "$file"
+    "${DockerCmd[@]}" "${args[@]}" "$@"
 }
 
 RunComposeBrief() {
@@ -1933,7 +1976,7 @@ DeleteMovedService() {
     fi
     if [[ -n "$file" ]] && CheckStatus "$name"; then
         Say warn "Stopping it now."
-        "${DockerCmd[@]}" --file "$file" --env-file "$envFile" down || return 1
+        RunOneCompose "$file" down || return 1
     fi
     Say warn "Deleting folder."
     rm -r -- "$target"
@@ -2189,7 +2232,7 @@ Move() {
         answer="$(Ask "Stop $folder before moving? [Y/n]")"
         if [[ -z "$answer" || "$answer" == [yY] ]]; then
             Say warn "Stopping $folder."
-            if ! "${DockerCmd[@]}" --file "$file" --env-file "$envFile" stop; then
+            if ! RunOneCompose "$file" stop; then
                 Say bad "Stop failed. This host was left unchanged."
                 exit 1
             fi
@@ -2235,7 +2278,7 @@ Move() {
         Say bad "Move failed. The folder is still here."
         if [[ "$stopped_for_move" -eq 1 ]]; then
             Say warn "Starting $folder again."
-            if "${DockerCmd[@]}" --file "$file" --env-file "$envFile" start; then
+            if RunOneCompose "$file" start; then
                 Say ok "$folder is running."
             else
                 Say bad "Could not start $folder."
@@ -2401,7 +2444,7 @@ Exec() {
     fi
     while IFS= read -r svc; do
         [[ -n "$svc" ]] && svcs+=("$svc")
-    done < <("${DockerCmd[@]}" --file "$file" --env-file "$envFile" config --services 2>/dev/null)
+    done < <(RunOneCompose "$file" config --services 2>/dev/null)
     svc=""
     for s in "${svcs[@]}"; do
         if [[ "${s,,}" == "$folder" ]]; then
@@ -3043,7 +3086,7 @@ ComposeConfigImages() {
     local output status err line
     err="$(mktemp)" || return 1
 
-    output=$("${DockerCmd[@]}" --file "$file" --env-file "$envFile" config --images 2>"$err")
+    output="$(RunOneCompose "$file" config --images 2>"$err")"
     status=$?
     if [ "$status" -eq 0 ]; then
         rm -f "$err"
@@ -3054,7 +3097,7 @@ ComposeConfigImages() {
         return 0
     fi
 
-    output=$("${DockerCmd[@]}" --file "$file" --env-file "$envFile" config 2>"$err")
+    output="$(RunOneCompose "$file" config 2>"$err")"
     status=$?
     if [ "$status" -eq 0 ]; then
         rm -f "$err"
