@@ -317,11 +317,14 @@ dc edit plex
 
 ### env
 
-Open the project `.env` in the same editor path as `edit`.
+Open an env file in the same editor path as `edit`.
 
 ```bash
 dc env
+dc env plex
 ```
+
+With no service name, opens the project `.env`. With a service name, opens that folder’s `.env`, or asks before creating it.
 
 ### tidy
 

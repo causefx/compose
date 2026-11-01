@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.42
-### ChangeNotes: compose loads env files from the service folder.
+VERSION=v1.7.43
+### ChangeNotes: env edits the project file or a service .env.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -148,7 +148,7 @@ remove|Remove service|remove
 move|Move a service to another host|move
 receive|Receive a service from another host|receive
 edit|Edit service|edit
-env|Edit env file|env
+env|Edit project or service env file|env
 tidy|Organize the env file and sort ports|tidy
 restore|Restore .env from the tidy backup|restore
 # @group Script
@@ -403,7 +403,7 @@ CheckAction() {
             ports) CheckPorts ;;
             nextport) NextPort ;;
             edit) EditFile "$folder" ;;
-            env) EditFile env ;;
+            env) EditEnv ;;
             tidy) TidyEnv ;;
             restore) RestoreEnv ;;
             bashrc) PrintBashrc ;;
@@ -2489,20 +2489,13 @@ Logs() {
 }
 
 EditFile() {
-    if [ "$1" == "env" ]; then
-        file_to_edit="$envFile"
-    else
-        file_to_edit="$APPS/$1/$COMPOSE_FILE"
-        backup_file_to_edit="$APPS/$1/$COMPOSE_FILE_DISABLED"
-        
-        # Only check the folder if $1 is not "env"
-        if ! CheckFolderSuppliedNoExit "$1"; then
-            Say bad "No service name supplied."
-            exit 1
-        fi
+    local file_to_edit backup_file_to_edit
+    if ! CheckFolderSuppliedNoExit "$1"; then
+        Say bad "No service name supplied."
+        exit 1
     fi
-
-    # Check for existence of files
+    file_to_edit="$APPS/$1/$COMPOSE_FILE"
+    backup_file_to_edit="$APPS/$1/$COMPOSE_FILE_DISABLED"
     if [ -f "$file_to_edit" ]; then
         Say ok "Using $file_to_edit"
     elif [ -f "$backup_file_to_edit" ]; then
@@ -2514,9 +2507,49 @@ EditFile() {
         Say info "$backup_file_to_edit"
         exit 1
     fi
-
     Banner "edit $1"
     OpenEditor "$file_to_edit"
+}
+
+EditEnv() {
+    local target answer
+
+    Banner "env"
+    if [[ -z "${folder:-}" || "$folder" == "all" ]]; then
+        if [[ ! -f "$envFile" ]]; then
+            Say bad "Env file does not exist: $envFile"
+            exit 1
+        fi
+        Say ok "Using $envFile"
+        OpenEditor "$envFile"
+        return 0
+    fi
+    if ! ValidServiceName "$folder"; then
+        Say bad "Env needs a service name."
+        Say info "dc env"
+        Say info "dc env plex"
+        exit 1
+    fi
+    if [[ ! -d "$APPS/$folder" ]]; then
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    target="$APPS/$folder/.env"
+    if [[ -f "$target" ]]; then
+        Say ok "Using $target"
+    else
+        answer="$(Ask "Create $folder/.env? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left $folder without an env file."
+            return 0
+        fi
+        printf '# %s service env\n' "$folder" >"$target" || {
+            Say bad "Could not create $target."
+            exit 1
+        }
+        Say ok "Created $target"
+    fi
+    OpenEditor "$target"
 }
 
 OpenEditor() {

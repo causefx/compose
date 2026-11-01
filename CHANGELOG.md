@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.43 env edits the project file or a service .env
 ### 1.7.42 compose loads env files from the service folder
 ### 1.7.41 README points to DOCS.md and CHANGELOG.md
 ### 1.7.40 docs shows the command reference
