@@ -459,7 +459,7 @@ Manage user crontab entries for this helper. Lines are tagged `# compose-schedul
 
 ```bash
 dc schedule
-dc schedule add pull 0 4 * * *
+dc schedule add pull 0 4 '*' '*' '*'
 dc schedule remove pull
 ```
 

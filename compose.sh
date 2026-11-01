@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.44
-### ChangeNotes: version asks to update again on a normal terminal.
+VERSION=v1.7.45
+### ChangeNotes: schedule add works when add was taken as a service.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -188,7 +188,7 @@ Help() {
     printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a move -s plex -- root@other-host\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a key -- root@other-host\n" "$c_dim" "$c_reset"
-    printf "  %bexample%b     compose.sh -a schedule -- add pull 0 4 * * *\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a schedule -- add pull 0 4 '*' '*' '*'\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a docs -- pull\n" "$c_dim" "$c_reset"
     Banner "actions"
     while IFS= read -r line; do
@@ -3873,7 +3873,7 @@ ScheduleList() {
     done < <(ReadCrontab)
     if [[ ${#lines[@]} -eq 0 ]]; then
         Say info "No scheduled actions."
-        Say info "dc schedule add pull 0 4 * * *"
+        Say info "dc schedule add pull 0 4 '*' '*' '*'"
         return 0
     fi
     for line in "${lines[@]}"; do
@@ -3897,12 +3897,12 @@ ScheduleAdd() {
     if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
         Say bad "Schedule needs an allowed action."
         Say info "pull update tidy issue images ports df hosts nextport version list ps"
-        Say info "dc schedule add pull 0 4 * * *"
+        Say info "dc schedule add pull 0 4 '*' '*' '*'"
         exit 1
     fi
     if ! ScheduleCronExprOk "${fields[@]}"; then
-        Say bad "Cron needs five fields."
-        Say info "dc schedule add pull 0 4 * * *"
+        Say bad "Cron needs five fields. Quote the stars so the shell keeps them."
+        Say info "dc schedule add pull 0 4 '*' '*' '*'"
         exit 1
     fi
     expr="${fields[*]}"
@@ -3981,13 +3981,22 @@ ScheduleRemove() {
 }
 
 Schedule() {
-    local sub="${EXTRA_ARGS[0]:-list}"
+    local sub
 
     Banner "schedule"
     if ! command -v crontab >/dev/null 2>&1; then
         Say bad "crontab is required."
         exit 1
     fi
+    # Older dc.bash treated "add" as -s. Put it back on EXTRA_ARGS.
+    if [[ -n "${folder:-}" && "$folder" != "all" ]]; then
+        case "$folder" in
+            list|add|remove|rm)
+                EXTRA_ARGS=("$folder" "${EXTRA_ARGS[@]}")
+                ;;
+        esac
+    fi
+    sub="${EXTRA_ARGS[0]:-list}"
     case "$sub" in
         list|"")
             ScheduleList
@@ -4006,7 +4015,7 @@ Schedule() {
         *)
             Say bad "Use list, add, or remove."
             Say info "dc schedule"
-            Say info "dc schedule add pull 0 4 * * *"
+            Say info "dc schedule add pull 0 4 '*' '*' '*'"
             Say info "dc schedule remove pull"
             exit 1
             ;;

@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.45 schedule add works when add was taken as a service
 ### 1.7.44 version asks to update again on a normal terminal
 ### 1.7.43 env edits the project file or a service .env
 ### 1.7.42 compose loads env files from the service folder
