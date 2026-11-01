@@ -147,7 +147,7 @@ Prefers an enabled compose file; a disabled file is allowed with a warning.
 
 ### list
 
-List service folders with their Compose project status. Enabled services first; if both groups exist, a dim `disabled` label separates the second group.
+List service folders with Compose project status and an **env** column (`yes` when the folder has a service env file, `-` otherwise). Enabled services first; if both groups exist, a dim `disabled` label separates the second group.
 
 ```bash
 dc list

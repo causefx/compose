@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.46
-### ChangeNotes: ports and nextport read every service env file.
+VERSION=v1.7.47
+### ChangeNotes: list shows whether each service has an env file.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -132,7 +132,7 @@ unpause|Unpause service(s)|compose|unpause
 exec|Run a command in a service|exec
 cp|Copy files to or from a service|cp
 # @group Check
-list|List service(s)|list
+list|List services and env files|list
 ps|Show container(s)|ps
 issue|Show containers that need attention|issue
 logs|Show service logs|logs
@@ -572,9 +572,20 @@ Update() {
   UpdateCurl
 }
 
+ServiceEnvLabel() {
+    local dir="$1"
+    local f
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        printf 'yes\n'
+        return 0
+    done < <(EnvFilesInDir "$dir")
+    printf '-\n'
+}
+
 List() {
-    local dir path status width enabled_count=0 disabled_count=0 i
-    local -a en_name=() en_status=() dis_name=() dis_status=()
+    local dir path status env_label env_color width enabled_count=0 disabled_count=0 i
+    local -a en_name=() en_status=() en_env=() dis_name=() dis_status=() dis_env=()
     Banner "list"
     LoadProjectStatus
     while IFS= read -r dir; do
@@ -583,14 +594,17 @@ List() {
         if [ -z "$status" ] || [ "$status" = " - " ]; then
             status="no container"
         fi
+        env_label="$(ServiceEnvLabel "$dir")"
         if [ -f "$dir/$COMPOSE_FILE" ]; then
             en_name+=("$path")
             en_status+=("$status")
+            en_env+=("$env_label")
             enabled_count=$((enabled_count+1))
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
             dis_name+=("$path")
             dis_status+=("$status")
+            dis_env+=("$env_label")
             disabled_count=$((disabled_count+1))
         fi
     done < <(ServiceDirs)
@@ -599,20 +613,41 @@ List() {
         return
     fi
     width="$(ColumnWidth 7 "${en_name[@]}" "${dis_name[@]}")"
-    printf "%b     %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "containers" "$c_reset"
+    printf "%b     %s  │  %s  │  %s%b\n" "$c_dim" \
+        "$(PadRight "service" "$width")" \
+        "$(PadRight "env" 3)" \
+        "containers" "$c_reset"
     for i in "${!en_name[@]}"; do
-        printf "  %b%s%b  %s  %b│%b  %s\n" \
+        if [[ "${en_env[$i]}" == "yes" ]]; then
+            env_label="yes"
+            env_color="$c_teal"
+        else
+            env_label="-"
+            env_color="$c_dim"
+        fi
+        printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
             "$c_green" "✔" "$c_reset" \
             "$(PadRight "${en_name[$i]}" "$width")" \
+            "$c_dim" "$c_reset" \
+            "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
             "$c_dim" "$c_reset" \
             "$(PaintStatus "${en_status[$i]}")"
     done
     if [[ ${#dis_name[@]} -gt 0 ]]; then
         [[ ${#en_name[@]} -gt 0 ]] && printf "\n  %bdisabled%b\n" "$c_dim" "$c_reset"
         for i in "${!dis_name[@]}"; do
-            printf "  %b%s%b  %s  %b│%b  %s\n" \
+            if [[ "${dis_env[$i]}" == "yes" ]]; then
+                env_label="yes"
+                env_color="$c_teal"
+            else
+                env_label="-"
+                env_color="$c_dim"
+            fi
+            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
                 "$c_red" "✘" "$c_reset" \
                 "$(PadRight "${dis_name[$i]}" "$width")" \
+                "$c_dim" "$c_reset" \
+                "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
                 "$c_dim" "$c_reset" \
                 "$(PaintStatus "${dis_status[$i]}")"
         done
