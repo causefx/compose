@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.45
-### ChangeNotes: schedule add works when add was taken as a service.
+VERSION=v1.7.46
+### ChangeNotes: ports and nextport read every service env file.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -141,7 +141,7 @@ stats|Show CPU, memory, and network|stats
 images|List compose images and tags|images
 pull|Pull images and skip ones already current|pull
 config|Render compose file(s)|compose|config
-ports|Show ports from ENV file|ports
+ports|Show ports from all env files|ports
 nextport|Show the next free host port|nextport
 df|Show Docker disk usage|df
 prune|Remove unused Docker data|prune
@@ -820,13 +820,12 @@ ComposeSteadyLabel() {
     printf '%s' "$joined"
 }
 
-ServiceEnvFiles() {
-    local compose_file="$1"
-    local dir f had_null=0
+EnvFilesInDir() {
+    local dir="$1"
+    local f had_null=0
     local -a candidates=() found=()
     local -A seen=()
 
-    dir="$(dirname "$compose_file")"
     [[ -d "$dir" ]] || return 0
     shopt -q nullglob && had_null=1
     shopt -s nullglob
@@ -837,7 +836,7 @@ ServiceEnvFiles() {
         case "$f" in
             *.bak|*.example|*.sample|*.swp|*~) continue ;;
         esac
-        if [[ "$f" -ef "$envFile" ]]; then
+        if [[ -n "${envFile:-}" && "$f" -ef "$envFile" ]]; then
             continue
         fi
         [[ -n "${seen[$f]+x}" ]] && continue
@@ -848,6 +847,31 @@ ServiceEnvFiles() {
         return 0
     fi
     printf '%s\n' "${found[@]}" | LC_ALL=C sort -u
+}
+
+ServiceEnvFiles() {
+    EnvFilesInDir "$(dirname "$1")"
+}
+
+AllEnvFiles() {
+    local dir f
+    local -A seen=()
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        printf '%s\n' "$envFile"
+        seen["$envFile"]=1
+    fi
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            [[ -n "${seen[$f]+x}" ]] && continue
+            if [[ -n "${envFile:-}" && "$f" -ef "$envFile" ]]; then
+                continue
+            fi
+            seen["$f"]=1
+            printf '%s\n' "$f"
+        done < <(EnvFilesInDir "$dir")
+    done < <(ServiceDirs)
 }
 
 AppendEnvFileArgs() {
@@ -2838,16 +2862,27 @@ MarkUsedPort() {
     _ports["$port"]=1
 }
 
-LoadEnvPorts() {
+LoadEnvPortsFromFile() {
     local name=$1
+    local file=$2
     local key value
-    [[ -f "$envFile" ]] || return 0
-    while IFS='=' read -r key value; do
+    [[ -f "$file" ]] || return 0
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
         key="${key%"${key##*[![:space:]]}"}"
+        key="${key//$'\r'/}"
         [[ "$key" == "STARTING_PORT" ]] && continue
         [[ "$key" == *_PORT_* && "$key" != \#* ]] || continue
         MarkUsedPort "$name" "$value"
-    done < "$envFile"
+    done < "$file"
+}
+
+LoadEnvPorts() {
+    local name=$1
+    local file
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        LoadEnvPortsFromFile "$name" "$file"
+    done < <(AllEnvFiles)
 }
 
 EnvStartingPort() {
@@ -2917,7 +2952,7 @@ NextPort() {
     for ((port=start; port<=65535; port++)); do
         [[ -n "${used[$port]+x}" ]] && continue
         Say ok "$port"
-        Say info "Free from .env and listening ports."
+        Say info "Free from env files and listening ports."
         return 0
     done
     Say bad "No free port from $start to 65535."
@@ -2925,26 +2960,32 @@ NextPort() {
 }
 
 CheckPorts() {
-    local key value name width
+    local key value name width file
     local -a names=()
     declare -A ports
     Banner "ports"
 
-    while IFS='=' read -r key value; do
-        if [[ $key == *_PORT_* && ! $key =~ ^# ]]; then
+    while IFS= read -r file; do
+        [[ -n "$file" && -f "$file" ]] || continue
+        while IFS='=' read -r key value || [[ -n "$key" ]]; do
+            key="${key//$'\r'/}"
+            key="${key%"${key##*[![:space:]]}"}"
+            [[ "$key" == *_PORT_* && "$key" != \#* ]] || continue
             name="${key%%_PORT_*}"
             name="${name^^}"
+            [[ -n "$name" ]] || continue
+            value="${value//$'\r'/}"
             if [[ -n "${ports[$name]:-}" ]]; then
                 ports[$name]+="  ${value}"
             else
                 ports[$name]="$value"
                 names+=("$name")
             fi
-        fi
-    done < "$envFile"
+        done < "$file"
+    done < <(AllEnvFiles)
 
     if [[ ${#names[@]} -eq 0 ]]; then
-        Say info "No _PORT_ entries in the env file."
+        Say info "No _PORT_ entries in project or service env files."
         return
     fi
     width="$(ColumnWidth 7 "${names[@]}")"

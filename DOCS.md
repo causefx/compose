@@ -234,7 +234,7 @@ dc config plex
 
 ### ports
 
-Show `*_PORT_*` keys from `.env`, grouped by service prefix.
+Show `*_PORT_*` keys from the project `.env` and every service-folder env file, grouped by service prefix.
 
 ```bash
 dc ports
@@ -242,7 +242,7 @@ dc ports
 
 ### nextport
 
-Print the next free host port. Starts at `STARTING_PORT` from `.env` (default **5000**). Skips other `*_PORT_*` values and TCP ports already listening. `STARTING_PORT` itself is not treated as in use. An explicit start must be at or above the floor.
+Print the next free host port. Starts at `STARTING_PORT` from `.env` (default **5000**). Skips other `*_PORT_*` values from the project and service env files, plus TCP ports already listening. `STARTING_PORT` itself is not treated as in use. An explicit start must be at or above the floor.
 
 ```bash
 dc nextport
@@ -510,7 +510,7 @@ From `.env.example` and script usage:
 | `PUID` / `PGID` / `TZ` | Common container user/timezone |
 | `TIME` / `DOCKER_SOCK` | Common volume snippets |
 | `DOCKERLOGGING_*` | Logging defaults |
-| `*_PORT_*` | Published ports tracked by `ports`, `nextport`, `tidy` |
+| `*_PORT_*` | Published ports tracked by `ports`, `nextport`, `tidy` (project + service env files) |
 
 ---
 
