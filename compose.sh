@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.49
-### ChangeNotes: version only offers update when remote is newer.
+VERSION=v1.7.50
+### ChangeNotes: envs lists compose vars for a service.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -154,6 +154,7 @@ move|Move a service to another host|move
 receive|Receive a service from another host|receive
 edit|Edit service|edit
 env|Edit project or service env file|env
+envs|List env vars used by a service|envs
 tidy|Organize the env file and sort ports|tidy
 restore|Restore .env from the tidy backup|restore
 # @group Script
@@ -409,6 +410,7 @@ CheckAction() {
             nextport) NextPort ;;
             edit) EditFile "$folder" ;;
             env) EditEnv ;;
+            envs) Envs ;;
             tidy) TidyEnv ;;
             restore) RestoreEnv ;;
             bashrc) PrintBashrc ;;
@@ -1712,6 +1714,94 @@ EnvRawLine() {
         found="$line"
     done < "$file"
     [[ -n "$found" ]] && printf '%s\n' "$found"
+}
+
+# Last assignment wins: project .env, then service-folder env files.
+LookupEnvAssignment() {
+    local key="$1" compose_file="$2"
+    local file line found=""
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        line="$(EnvRawLine "$envFile" "$key")"
+        [[ -n "$line" ]] && found="$line"
+    fi
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        line="$(EnvRawLine "$file" "$key")"
+        [[ -n "$line" ]] && found="$line"
+    done < <(ServiceEnvFiles "$compose_file")
+    [[ -n "$found" ]] && printf '%s\n' "$found"
+}
+
+Envs() {
+    local file show_values=0 arg name width line value color
+    local -a names=()
+    local missing=0
+
+    Banner "envs"
+    for arg in "${EXTRA_ARGS[@]}"; do
+        case "$arg" in
+            values|--values|-v) show_values=1 ;;
+            *)
+                Say bad "Unknown argument: $arg"
+                Say info "dc envs plex"
+                Say info "dc envs plex values"
+                exit 1
+                ;;
+        esac
+    done
+    if ! ValidServiceName "${folder:-}"; then
+        Say bad "Envs needs a service name."
+        Say info "dc envs plex"
+        Say info "dc envs plex values"
+        exit 1
+    fi
+    if [[ ! -d "$APPS/$folder" ]]; then
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE"
+    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
+    else
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    while IFS= read -r name; do
+        [[ -n "$name" ]] && names+=("$name")
+    done < <(ComposeVarNames "$file" | LC_ALL=C sort -u)
+    if [[ ${#names[@]} -eq 0 ]]; then
+        Say info "No env vars in $folder compose file."
+        return 0
+    fi
+    Say info "$folder · ${#names[@]} var(s)"
+    if [[ "$show_values" -eq 0 ]]; then
+        for name in "${names[@]}"; do
+            printf "  %b%s%b\n" "$c_teal" "$name" "$c_reset"
+        done
+        return 0
+    fi
+    width="$(ColumnWidth 3 "${names[@]}")"
+    printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "var" "$width")" "value" "$c_reset"
+    for name in "${names[@]}"; do
+        line="$(LookupEnvAssignment "$name" "$file")"
+        if [[ -n "$line" ]]; then
+            value="${line#*=}"
+            color="$c_reset"
+        else
+            value="-"
+            color="$c_dim"
+            missing=$((missing + 1))
+        fi
+        printf "  %b%s%b  %b│%b  %b%s%b\n" \
+            "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" \
+            "$c_dim" "$c_reset" \
+            "$color" "$value" "$c_reset"
+    done
+    if [[ "$missing" -gt 0 ]]; then
+        printf "\n"
+        Say warn "$missing unset in project or service env files."
+    fi
 }
 
 TrimField() {

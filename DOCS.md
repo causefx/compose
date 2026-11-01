@@ -326,6 +326,15 @@ dc env plex
 
 With no service name, opens the project `.env`. With a service name, opens that folder’s `.env`, or asks before creating it.
 
+### envs
+
+List `${VAR}` / `$VAR` names referenced in a service’s compose file. Add `values` to resolve each key from the project `.env` plus that service’s env files (last file wins). Unset keys show as `-`.
+
+```bash
+dc envs plex
+dc envs plex values
+```
+
 ### tidy
 
 Rewrite `.env` into clean sections after you confirm:

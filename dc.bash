@@ -72,6 +72,8 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
+    elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then
+        COMPREPLY=( $(compgen -W "values" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "schedule" && ( "${COMP_WORDS[2]}" == "add" || "${COMP_WORDS[2]}" == "remove" ) ]]; then
         COMPREPLY=( $(compgen -W "pull update tidy issue images ports df hosts nextport version list ps" -- "$cur") )
     fi
