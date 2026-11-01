@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.59
-### ChangeNotes: move completes remembered host names.
+VERSION=v1.7.60
+### ChangeNotes: move reads project and service env files.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -2066,6 +2066,22 @@ LookupEnvSource() {
     printf '%s\n' "$source"
 }
 
+# Last assignment wins: project .env, then service-folder env files.
+LookupEnvAssignment() {
+    local key="$1" compose_file="$2"
+    local file line found=""
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        line="$(EnvRawLine "$envFile" "$key")"
+        [[ -n "$line" ]] && found="$line"
+    fi
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        line="$(EnvRawLine "$file" "$key")"
+        [[ -n "$line" ]] && found="$line"
+    done < <(ServiceEnvFiles "$compose_file")
+    [[ -n "$found" ]] && printf '%s\n' "$found"
+}
+
 # Load project then service env files into the shell (last wins).
 # Unquoted and double-quoted values expand like Compose; single-quoted stay literal.
 ApplyEnvFilesForService() {
@@ -2905,7 +2921,7 @@ Move() {
         [[ -n "$name" ]] && var_names+=("$name")
     done < <(ComposeVarNames "$file")
     for name in "${var_names[@]}"; do
-        line="$(EnvRawLine "$envFile" "$name")"
+        line="$(LookupEnvAssignment "$name" "$file")"
         if [[ -n "$line" ]]; then
             env_lines+=("$line")
         else
