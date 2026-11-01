@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.54 where shows which services use an env var
 ### 1.7.53 envs sorts by source then name
 ### 1.7.52 envs table shows shared or service source
 ### 1.7.51 envs values expands nested env references

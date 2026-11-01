@@ -27,7 +27,7 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 
 ### Service name
 
-Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
+Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `where`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
 
 ### Marks
 
@@ -333,6 +333,15 @@ List `${VAR}` / `$VAR` names referenced in a service’s compose file as a table
 ```bash
 dc envs plex
 dc envs plex values
+```
+
+### where
+
+Show which services reference an env var. Scans every service’s compose file and service env files for `${VAR}` / `$VAR`. Notes when the project `.env` defines it. Table columns: service, enabled/disabled state, and **in** (`compose`, `env`, or both). Sorted by service name A–Z.
+
+```bash
+dc where MEDIA
+dc where PUID
 ```
 
 ### tidy

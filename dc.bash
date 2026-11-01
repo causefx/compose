@@ -7,7 +7,7 @@ dc() {
     shift || true
     local service=""
     local -a extra=()
-    if [[ "$action" != "key" && "$action" != "nextport" && "$action" != "schedule" && "$action" != "docs" && $# -gt 0 && "$1" != -* ]]; then
+    if [[ "$action" != "key" && "$action" != "nextport" && "$action" != "schedule" && "$action" != "docs" && "$action" != "where" && $# -gt 0 && "$1" != -* ]]; then
         service="$1"
         shift
     fi
@@ -70,7 +70,7 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "list add remove" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" == "docs" ]]; then
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
-    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" ]]; then
+    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then
         COMPREPLY=( $(compgen -W "values" -- "$cur") )

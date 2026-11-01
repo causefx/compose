@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.53
-### ChangeNotes: envs sorts by source then name.
+VERSION=v1.7.54
+### ChangeNotes: where shows which services use an env var.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -155,6 +155,7 @@ receive|Receive a service from another host|receive
 edit|Edit service|edit
 env|Edit project or service env file|env
 envs|List env vars used by a service|envs
+where|Show where an env var is used|where
 tidy|Organize the env file and sort ports|tidy
 restore|Restore .env from the tidy backup|restore
 # @group Script
@@ -411,6 +412,7 @@ CheckAction() {
             edit) EditFile "$folder" ;;
             env) EditEnv ;;
             envs) Envs ;;
+            where) Where ;;
             tidy) TidyEnv ;;
             restore) RestoreEnv ;;
             bashrc) PrintBashrc ;;
@@ -1876,6 +1878,134 @@ Envs() {
         printf "\n"
         Say warn "$missing unset in shared or service env files."
     fi
+}
+
+ComposeUsesVar() {
+    local file="$1" want="$2" name
+    [[ -f "$file" ]] || return 1
+    while IFS= read -r name; do
+        [[ "$name" == "$want" ]] && return 0
+    done < <(ComposeVarNames "$file")
+    return 1
+}
+
+EnvFileUsesVar() {
+    local file="$1" want="$2" line raw
+    [[ -f "$file" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=(.*)$ ]] || continue
+        raw="${BASH_REMATCH[1]}"
+        if [[ "$raw" == \'*\' ]]; then
+            continue
+        fi
+        if [[ "$raw" == \"*\" ]]; then
+            raw="${raw:1:${#raw}-2}"
+        fi
+        if [[ "$raw" =~ \$\{$want([^A-Za-z0-9_]|$) ]] || [[ "$raw" =~ \$$want([^A-Za-z0-9_]|$) ]]; then
+            return 0
+        fi
+    done < "$file"
+    return 1
+}
+
+ServiceEnvUsesVar() {
+    local compose_file="$1" want="$2" f
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        EnvFileUsesVar "$f" "$want" && return 0
+    done < <(ServiceEnvFiles "$compose_file")
+    return 1
+}
+
+Where() {
+    local var dir path compose_file in_compose in_env label width state name
+    local -a names=() rows=()
+    local defined=""
+
+    Banner "where"
+    var="${EXTRA_ARGS[0]:-}"
+    if [[ -z "$var" && -n "${folder:-}" && "$folder" != "all" ]]; then
+        var="$folder"
+    fi
+    if [[ ${#EXTRA_ARGS[@]} -gt 1 ]]; then
+        Say bad "Where takes one env var name."
+        Say info "dc where MEDIA"
+        exit 1
+    fi
+    if [[ -z "$var" || ! "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        Say bad "Where needs an env var name."
+        Say info "dc where MEDIA"
+        exit 1
+    fi
+    if [[ -n "${envFile:-}" && -f "$envFile" ]] && [[ -n "$(EnvRawLine "$envFile" "$var")" ]]; then
+        defined="shared"
+    fi
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        path="$(basename "$dir")"
+        if [[ -f "$dir/$COMPOSE_FILE" ]]; then
+            compose_file="$dir/$COMPOSE_FILE"
+            state="enabled"
+        elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
+            compose_file="$dir/$COMPOSE_FILE_DISABLED"
+            state="disabled"
+        else
+            continue
+        fi
+        in_compose=0
+        in_env=0
+        ComposeUsesVar "$compose_file" "$var" && in_compose=1
+        ServiceEnvUsesVar "$compose_file" "$var" && in_env=1
+        if [[ "$in_compose" -eq 0 && "$in_env" -eq 0 ]]; then
+            continue
+        fi
+        if [[ "$in_compose" -eq 1 && "$in_env" -eq 1 ]]; then
+            label="compose, env"
+        elif [[ "$in_compose" -eq 1 ]]; then
+            label="compose"
+        else
+            label="env"
+        fi
+        names+=("$path")
+        rows+=("${path}|${state}|${label}")
+    done < <(ServiceDirs)
+    Say info "$var"
+    if [[ -n "$defined" ]]; then
+        Say info "Defined in shared"
+    fi
+    if [[ ${#names[@]} -eq 0 ]]; then
+        Say info "Not referenced by any service."
+        return 0
+    fi
+    Say info "${#names[@]} service(s)"
+    width="$(ColumnWidth 7 "${names[@]}")"
+    printf "%b  %s  │  %s  │  %s%b\n" "$c_dim" \
+        "$(PadRight "service" "$width")" \
+        "$(PadRight "state" 8)" \
+        "in" "$c_reset"
+    while IFS='|' read -r name state label; do
+        [[ -n "$name" ]] || continue
+        if [[ "$state" == "enabled" ]]; then
+            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+                "$c_green" "✔" "$c_reset" \
+                "$(PadRight "$name" "$width")" \
+                "$c_dim" "$c_reset" \
+                "$c_green" "$(PadRight "enabled" 8)" "$c_reset" \
+                "$c_dim" "$c_reset" \
+                "$label"
+        else
+            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+                "$c_red" "✘" "$c_reset" \
+                "$(PadRight "$name" "$width")" \
+                "$c_dim" "$c_reset" \
+                "$c_dim" "$(PadRight "disabled" 8)" "$c_reset" \
+                "$c_dim" "$c_reset" \
+                "$label"
+        fi
+    done < <(printf '%s\n' "${rows[@]}" | LC_ALL=C sort -t '|' -k1,1)
 }
 
 TrimField() {
