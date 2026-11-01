@@ -328,7 +328,7 @@ With no service name, opens the project `.env`. With a service name, opens that 
 
 ### envs
 
-List `${VAR}` / `$VAR` names referenced in a service’s compose file. Add `values` to resolve each key from the project `.env` plus that service’s env files (last file wins), with nested references expanded the same way Compose does (for example `${MEDIA}/photos` → `/mnt/media/photos`). Unset keys show as `-`.
+List `${VAR}` / `$VAR` names referenced in a service’s compose file as a table with a **from** column: `shared` (project `.env`) or `service` (that folder’s env file). Rows sort by source (`shared`, then `service`, then unset), then name A–Z. Last file wins when both define the key. Add `values` for an expanded value column (nested refs like `${MEDIA}/photos` resolve the same way Compose does). Unset keys show `-`.
 
 ```bash
 dc envs plex

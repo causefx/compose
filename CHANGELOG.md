@@ -1,5 +1,7 @@
 # Changelog
 
+### 1.7.53 envs sorts by source then name
+### 1.7.52 envs table shows shared or service source
 ### 1.7.51 envs values expands nested env references
 ### 1.7.50 envs lists compose vars for a service
 ### 1.7.49 version only offers update when remote is newer

@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.51
-### ChangeNotes: envs values expands nested env references.
+VERSION=v1.7.53
+### ChangeNotes: envs sorts by source then name.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1716,20 +1716,20 @@ EnvRawLine() {
     [[ -n "$found" ]] && printf '%s\n' "$found"
 }
 
-# Last assignment wins: project .env, then service-folder env files.
-LookupEnvAssignment() {
+# Last wins: project .env → "shared", service-folder env → "service", else "".
+LookupEnvSource() {
     local key="$1" compose_file="$2"
-    local file line found=""
+    local file line source=""
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
         line="$(EnvRawLine "$envFile" "$key")"
-        [[ -n "$line" ]] && found="$line"
+        [[ -n "$line" ]] && source="shared"
     fi
     while IFS= read -r file; do
         [[ -n "$file" ]] || continue
         line="$(EnvRawLine "$file" "$key")"
-        [[ -n "$line" ]] && found="$line"
+        [[ -n "$line" ]] && source="service"
     done < <(ServiceEnvFiles "$compose_file")
-    [[ -n "$found" ]] && printf '%s\n' "$found"
+    printf '%s\n' "$source"
 }
 
 # Load project then service env files into the shell (last wins).
@@ -1773,8 +1773,8 @@ ApplyEnvFilesForService() {
 }
 
 Envs() {
-    local file show_values=0 arg name width value color
-    local -a names=()
+    local file show_values=0 arg name width from_w=7 source value src_color val_color rank
+    local -a names=() rows=()
     local missing=0
 
     Banner "envs"
@@ -1815,32 +1815,66 @@ Envs() {
         return 0
     fi
     Say info "$folder · ${#names[@]} var(s)"
-    if [[ "$show_values" -eq 0 ]]; then
-        for name in "${names[@]}"; do
-            printf "  %b%s%b\n" "$c_teal" "$name" "$c_reset"
-        done
-        return 0
+    if [[ "$show_values" -eq 1 ]]; then
+        ApplyEnvFilesForService "$file"
     fi
-    ApplyEnvFilesForService "$file"
-    width="$(ColumnWidth 3 "${names[@]}")"
-    printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "var" "$width")" "value" "$c_reset"
     for name in "${names[@]}"; do
-        if VarIsSet "$name"; then
-            value="$(VarValue "$name")"
-            color="$c_reset"
+        source="$(LookupEnvSource "$name" "$file")"
+        case "$source" in
+            shared) rank=1 ;;
+            service) rank=2 ;;
+            *)
+                rank=3
+                source="-"
+                ;;
+        esac
+        rows+=("${rank}|${source}|${name}")
+    done
+    width="$(ColumnWidth 3 "${names[@]}")"
+    if [[ "$show_values" -eq 1 ]]; then
+        printf "%b  %s  │  %s  │  %s%b\n" "$c_dim" \
+            "$(PadRight "var" "$width")" \
+            "$(PadRight "from" "$from_w")" \
+            "value" "$c_reset"
+    else
+        printf "%b  %s  │  %s%b\n" "$c_dim" \
+            "$(PadRight "var" "$width")" \
+            "from" "$c_reset"
+    fi
+    while IFS='|' read -r rank source name; do
+        [[ -n "$name" ]] || continue
+        if [[ "$source" == "service" ]]; then
+            src_color="$c_teal"
         else
-            value="-"
-            color="$c_dim"
+            src_color="$c_dim"
+        fi
+        if [[ "$source" == "-" ]]; then
             missing=$((missing + 1))
         fi
-        printf "  %b%s%b  %b│%b  %b%s%b\n" \
-            "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" \
-            "$c_dim" "$c_reset" \
-            "$color" "$value" "$c_reset"
-    done
+        if [[ "$show_values" -eq 1 ]]; then
+            if [[ "$source" != "-" ]] && VarIsSet "$name"; then
+                value="$(VarValue "$name")"
+                val_color="$c_reset"
+            else
+                value="-"
+                val_color="$c_dim"
+            fi
+            printf "  %b%s%b  %b│%b  %b%s%b  %b│%b  %b%s%b\n" \
+                "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" \
+                "$c_dim" "$c_reset" \
+                "$src_color" "$(PadRight "$source" "$from_w")" "$c_reset" \
+                "$c_dim" "$c_reset" \
+                "$val_color" "$value" "$c_reset"
+        else
+            printf "  %b%s%b  %b│%b  %b%s%b\n" \
+                "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" \
+                "$c_dim" "$c_reset" \
+                "$src_color" "$source" "$c_reset"
+        fi
+    done < <(printf '%s\n' "${rows[@]}" | LC_ALL=C sort -t '|' -k1,1n -k3,3)
     if [[ "$missing" -gt 0 ]]; then
         printf "\n"
-        Say warn "$missing unset in project or service env files."
+        Say warn "$missing unset in shared or service env files."
     fi
 }
 
