@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.49 version only offers update when remote is newer
 ### 1.7.48 list env dash no longer breaks printf
 ### 1.7.47 list shows whether each service has an env file
 ### 1.7.46 ports and nextport read every service env file

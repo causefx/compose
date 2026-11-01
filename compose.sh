@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.48
-### ChangeNotes: list env dash no longer breaks printf.
+VERSION=v1.7.49
+### ChangeNotes: version only offers update when remote is newer.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -429,6 +429,21 @@ CheckAction() {
     exit 1
 }
 
+# Exit 0 when $1 is a higher vMAJOR.MINOR.PATCH than $2.
+VersionIsNewer() {
+    local left="${1#v}" right="${2#v}"
+    local l1=0 l2=0 l3=0 r1=0 r2=0 r3=0
+    IFS=. read -r l1 l2 l3 _ <<< "${left}.0.0.0"
+    IFS=. read -r r1 r2 r3 _ <<< "${right}.0.0.0"
+    [[ "$l1" =~ ^[0-9]+$ && "$l2" =~ ^[0-9]+$ && "$l3" =~ ^[0-9]+$ ]] || return 1
+    [[ "$r1" =~ ^[0-9]+$ && "$r2" =~ ^[0-9]+$ && "$r3" =~ ^[0-9]+$ ]] || return 1
+    ((10#$l1 > 10#$r1)) && return 0
+    ((10#$l1 < 10#$r1)) && return 1
+    ((10#$l2 > 10#$r2)) && return 0
+    ((10#$l2 < 10#$r2)) && return 1
+    ((10#$l3 > 10#$r3))
+}
+
 CheckVersion() {
     local mode="$1"
     local answer
@@ -441,7 +456,7 @@ CheckVersion() {
         return 1
     fi
 
-    if [[ "$VERSION" == "$LATEST_RELEASE" ]]; then
+    if [[ "$VERSION" == "$LATEST_RELEASE" ]] || ! VersionIsNewer "$LATEST_RELEASE" "$VERSION"; then
         if [[ "$mode" == "apply" ]]; then
             Say ok "Already up to date."
         fi

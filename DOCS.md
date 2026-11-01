@@ -388,7 +388,7 @@ compose.sh -a receive -s plex   # fed by move over SSH
 
 ### version
 
-Print the local version. If a newer GitHub release exists, asks whether to install it.
+Print the local version. If a higher GitHub version exists, asks whether to install it. A local build ahead of GitHub does not prompt.
 
 ```bash
 dc version
@@ -396,7 +396,7 @@ dc version
 
 ### update
 
-Download when the published version differs. Same file set as a non-git update. `.env` is never overwritten.
+Download only when the published version is higher. Same file set as a non-git update. `.env` is never overwritten.
 
 ```bash
 dc update
