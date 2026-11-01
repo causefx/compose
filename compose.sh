@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.56
-### ChangeNotes: archive and unarchive disabled services.
+VERSION=v1.7.57
+### ChangeNotes: list paints archived status correctly.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -715,13 +715,13 @@ List() {
                 env_label="-"
                 env_color="$c_dim"
             fi
-            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %b%s%b\n" \
                 "$c_dim" "▢" "$c_reset" \
                 "$(PadRight "${ar_name[$i]}" "$width")" \
                 "$c_dim" "$c_reset" \
                 "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
                 "$c_dim" "$c_reset" \
-                "${c_dim}archived${c_reset}"
+                "$c_dim" "archived" "$c_reset"
         done
     fi
     printf "\n"

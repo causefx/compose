@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.57 list paints archived status correctly
 ### 1.7.56 archive and unarchive disabled services
 ### 1.7.55 where keeps the env var name case
 ### 1.7.54 where shows which services use an env var
