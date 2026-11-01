@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.57
-### ChangeNotes: list paints archived status correctly.
+VERSION=v1.7.58
+### ChangeNotes: move keeps archived services archived.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1020,6 +1020,54 @@ ServiceDir() {
             return 1
             ;;
     esac
+}
+
+# Prints: /abs/path|apps   or   /abs/path|archive
+# Prefers APPS when both somehow exist.
+ResolveServiceRoot() {
+    local name="$1"
+    local parent target root
+
+    if [[ -z "$name" || "$name" == *"/"* || "$name" == *".."* || "$name" == "." ]]; then
+        return 1
+    fi
+    if [[ -d "${APPS:-}/$name" ]]; then
+        parent="$(cd -P "$APPS" && pwd -P)" || return 1
+        target="$(cd -P "$APPS/$name" && pwd -P)" || return 1
+        case "$target" in
+            "$parent"/*)
+                printf '%s|apps\n' "$target"
+                return 0
+                ;;
+            *) return 1 ;;
+        esac
+    fi
+    root="$(ArchiveDir)"
+    if [[ -d "$root/$name" ]]; then
+        parent="$(cd -P "$root" && pwd -P)" || return 1
+        target="$(cd -P "$root/$name" && pwd -P)" || return 1
+        case "$target" in
+            "$parent"/*)
+                printf '%s|archive\n' "$target"
+                return 0
+                ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 1
+}
+
+ServiceComposeFile() {
+    local root="$1"
+    if [[ -f "$root/$COMPOSE_FILE" ]]; then
+        printf '%s\n' "$root/$COMPOSE_FILE"
+        return 0
+    fi
+    if [[ -f "$root/$COMPOSE_FILE_DISABLED" ]]; then
+        printf '%s\n' "$root/$COMPOSE_FILE_DISABLED"
+        return 0
+    fi
+    return 1
 }
 
 Remove() {
@@ -2625,16 +2673,15 @@ Hosts() {
 }
 
 DeleteMovedService() {
-    local name="$1" target file=""
-    if ! target="$(ServiceDir "$name")"; then
+    local name="$1" target loc file="" resolved
+    if ! resolved="$(ResolveServiceRoot "$name")"; then
+        Say bad "Service does not exist."
         return 1
     fi
-    if [[ -f "$target/$COMPOSE_FILE" ]]; then
-        file="$target/$COMPOSE_FILE"
-    elif [[ -f "$target/$COMPOSE_FILE_DISABLED" ]]; then
-        file="$target/$COMPOSE_FILE_DISABLED"
-    fi
-    if [[ -n "$file" ]] && CheckStatus "$name"; then
+    target="${resolved%%|*}"
+    loc="${resolved##*|}"
+    file="$(ServiceComposeFile "$target" || true)"
+    if [[ "$loc" == "apps" && -n "$file" ]] && CheckStatus "$name"; then
         Say warn "Stopping it now."
         RunOneCompose "$file" down || return 1
     fi
@@ -2666,6 +2713,7 @@ ProgressBar() {
 
 PackService() {
     local dest="$1"
+    local pack_root="${2:-$APPS}"
     local verbose err count done_n tpid watcher=""
     verbose="$(mktemp)" || return 1
     err="$(mktemp)" || {
@@ -2676,9 +2724,9 @@ PackService() {
     count="${count//[[:space:]]/}"
     [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || count=1
     if command -v stdbuf >/dev/null 2>&1; then
-        stdbuf -oL tar -C "$APPS" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
+        stdbuf -oL tar -C "$pack_root" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
     else
-        tar -C "$APPS" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
+        tar -C "$pack_root" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
     fi
     tpid=$!
     if [[ -t 2 ]]; then
@@ -2786,8 +2834,9 @@ StreamFile() {
 }
 
 Move() {
-    local host file service_dir size answer remote_info script_path apps_path
+    local host file service_dir pack_root size answer remote_info script_path apps_path
     local errfile remote_cmd name line key sent run_state header archive status stopped_for_move=0
+    local resolved loc archived_flag=0
     local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=20 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
     local -a env_lines=() missing=() skipped=()
     local -a var_names=()
@@ -2810,18 +2859,22 @@ Move() {
         Say bad "ssh is required."
         exit 1
     fi
-    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE"
-    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
-    else
+    if ! resolved="$(ResolveServiceRoot "$folder")"; then
         Say bad "Service does not exist."
         exit 1
     fi
-    service_dir="$(cd -P "$APPS/$folder" && pwd -P)" || {
+    service_dir="${resolved%%|*}"
+    loc="${resolved##*|}"
+    if [[ "$loc" == "archive" ]]; then
+        archived_flag=1
+        pack_root="$(ArchiveDir)"
+    else
+        pack_root="$APPS"
+    fi
+    if ! file="$(ServiceComposeFile "$service_dir")"; then
         Say bad "Service does not exist."
         exit 1
-    }
+    fi
     Say info "Contacting $host."
     errfile="$(mktemp)" || exit 1
     remote_info="$(ssh "${ssh_opts[@]}" "$host" bash -s <<<"$(RemotePathProgram)" 2>"$errfile")" || {
@@ -2867,7 +2920,12 @@ Move() {
     Say info "Destination: $host"
     Say info "Apps path: $apps_path"
     Say info "Script: $script_path"
-    Say info "The other host pulls the image when the service is started."
+    if [[ "$archived_flag" -eq 1 ]]; then
+        Say info "Source: archived"
+        Say info "Lands archived on the other host."
+    else
+        Say info "The other host pulls the image when the service is started."
+    fi
     if [[ ${#skipped[@]} -gt 0 ]]; then
         Say warn "Outside mounts stay here:"
         printf '    %s\n' "${skipped[@]}"
@@ -2887,18 +2945,20 @@ Move() {
         Say info "Keeping $folder here."
         return 0
     fi
-    run_state="$(printf '%s' "$(ReturnStatus "$folder")" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$run_state" == *running* || "$run_state" == *restarting* || "$run_state" == *paused* ]]; then
-        answer="$(Ask "Stop $folder before moving? [Y/n]")"
-        if [[ -z "$answer" || "$answer" == [yY] ]]; then
-            Say warn "Stopping $folder."
-            if ! RunOneCompose "$file" stop; then
-                Say bad "Stop failed. This host was left unchanged."
-                exit 1
+    if [[ "$archived_flag" -eq 0 ]]; then
+        run_state="$(printf '%s' "$(ReturnStatus "$folder")" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$run_state" == *running* || "$run_state" == *restarting* || "$run_state" == *paused* ]]; then
+            answer="$(Ask "Stop $folder before moving? [Y/n]")"
+            if [[ -z "$answer" || "$answer" == [yY] ]]; then
+                Say warn "Stopping $folder."
+                if ! RunOneCompose "$file" stop; then
+                    Say bad "Stop failed. This host was left unchanged."
+                    exit 1
+                fi
+                stopped_for_move=1
+            else
+                Say warn "Copying while containers are running."
             fi
-            stopped_for_move=1
-        else
-            Say warn "Copying while containers are running."
         fi
     fi
 
@@ -2908,9 +2968,10 @@ Move() {
         exit 1
     }
     {
-        printf 'COMPOSE-MOVE 1\n'
+        printf 'COMPOSE-MOVE 2\n'
         printf 'service %s\n' "$folder"
         printf 'compose %s\n' "$(basename "$file")"
+        printf 'archived %s\n' "$archived_flag"
         printf 'env %s\n' "${#env_lines[@]}"
         if [[ ${#env_lines[@]} -gt 0 ]]; then
             printf '%s\n' "${env_lines[@]}"
@@ -2920,7 +2981,7 @@ Move() {
         rm -f "$header" "$archive"
         exit 1
     }
-    if ! PackService "$archive"; then
+    if ! PackService "$archive" "$pack_root"; then
         rm -f "$header" "$archive"
         exit 1
     fi
@@ -2946,9 +3007,19 @@ Move() {
         fi
         exit 1
     fi
-    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+    if [[ "$archived_flag" -eq 0 && -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
         mv "$APPS/$folder/$COMPOSE_FILE" "$APPS/$folder/$COMPOSE_FILE_DISABLED"
         Say warn "Disabled $folder on this host."
+    fi
+    if [[ "$archived_flag" -eq 1 ]]; then
+        Say ok "Moved $folder to $host. It is archived there."
+        answer="$(Ask "Remove $folder from this archive? [y/N]")"
+        if [[ "$answer" == [yY] ]]; then
+            DeleteMovedService "$folder"
+            return
+        fi
+        Say info "Kept the archived folder here."
+        return 0
     fi
     Say ok "Moved $folder to $host. It is disabled there."
     answer="$(Ask "Remove $folder from this host? [y/N]")"
@@ -2960,8 +3031,8 @@ Move() {
 }
 
 Receive() {
-    local magic svc_line compose_line env_line compose_name env_count
-    local line key added=0 i work archive arrived final_name
+    local magic svc_line compose_line archived_line env_line compose_name env_count
+    local line key added=0 i work archive arrived final_name dest_root archived_flag=0
     local -a env_lines=()
 
     if ! ValidServiceName "$folder"; then
@@ -2972,7 +3043,7 @@ Receive() {
         Say bad "APPS directory does not exist."
         exit 1
     fi
-    if [[ -e "$APPS/$folder" ]]; then
+    if [[ -e "$APPS/$folder" || -e "$(ArchiveDir)/$folder" ]]; then
         Say bad "Service already exists on this host."
         exit 1
     fi
@@ -2980,12 +3051,14 @@ Receive() {
         exec <"$RECEIVE_STREAM"
     fi
     IFS= read -r magic || exit 1
-    [[ "$magic" == "COMPOSE-MOVE 1" ]] || {
+    [[ "$magic" == "COMPOSE-MOVE 2" ]] || {
         Say bad "Move stream was not recognized."
+        Say info "Both hosts need a current compose.sh (COMPOSE-MOVE 2)."
         exit 1
     }
     IFS= read -r svc_line || exit 1
     IFS= read -r compose_line || exit 1
+    IFS= read -r archived_line || exit 1
     IFS= read -r env_line || exit 1
     [[ "$svc_line" == "service $folder" ]] || {
         Say bad "Move stream service does not match."
@@ -3000,6 +3073,11 @@ Receive() {
         Say bad "Compose file name was refused."
         exit 1
     }
+    [[ "$archived_line" =~ ^archived[[:space:]]+(0|1)$ ]] || {
+        Say bad "Move stream was not recognized."
+        exit 1
+    }
+    archived_flag="${BASH_REMATCH[1]}"
     [[ "$env_line" =~ ^env[[:space:]]+([0-9]+)$ ]] || {
         Say bad "Move stream was not recognized."
         exit 1
@@ -3051,12 +3129,22 @@ Receive() {
         Say bad "Compose file was not in the archive."
         exit 1
     fi
-    if [[ -e "$APPS/$folder" ]]; then
+    if [[ -e "$APPS/$folder" || -e "$(ArchiveDir)/$folder" ]]; then
         rm -rf "$work"
         Say bad "Service already exists on this host."
         exit 1
     fi
-    if ! mv "$work/unpack/$folder" "$APPS/$folder"; then
+    if [[ "$archived_flag" -eq 1 ]]; then
+        dest_root="$(ArchiveDir)"
+        mkdir -p "$dest_root" || {
+            rm -rf "$work"
+            Say bad "Could not create archive directory."
+            exit 1
+        }
+    else
+        dest_root="$APPS"
+    fi
+    if ! mv "$work/unpack/$folder" "$dest_root/$folder"; then
         rm -rf "$work"
         Say bad "Could not place the service folder."
         exit 1
@@ -3077,7 +3165,11 @@ Receive() {
             added=1
         done
     fi
-    Say ok "Received $folder. It is disabled."
+    if [[ "$archived_flag" -eq 1 ]]; then
+        Say ok "Received $folder. It is archived."
+    else
+        Say ok "Received $folder. It is disabled."
+    fi
 }
 
 Exec() {

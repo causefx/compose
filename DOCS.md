@@ -392,26 +392,32 @@ dc restore
 
 ### move
 
-Copy a service folder to another host that also runs this script.
+Copy a service folder to another host that also runs this script. Works for **enabled**, **disabled**, and **archived** services.
 
 ```bash
 dc move plex root@other-host
 dc move plex other-host
+dc move apollo other-host          # archived stays archived
 ```
+
+| Source on this host | Lands on other host |
+|---------------------|---------------------|
+| Enabled / disabled under `APPS` | Disabled under `APPS` |
+| Archived under `ARCHIVE` | Archived under that host’s `ARCHIVE` |
 
 Flow:
 
 1. Contact the host over SSH (BatchMode, public key only — no password prompt)
 2. Discover remote `compose.sh` and `APPS` from that host’s `dc.bash` source line
-3. Show size, destination, env keys, skipped outside mounts
-4. Confirm move; optionally stop running containers first
-5. Pack with a progress bar, send with a progress bar
-6. Remote `receive` writes the folder **disabled** and merges missing `.env` keys
-7. Disable the service on the source; ask whether to delete the local folder (default no)
+3. Show size, destination, env keys, skipped outside mounts (and that an archived move stays archived)
+4. Confirm move; for APPS services, optionally stop running containers first (skipped when already archived)
+5. Pack with a progress bar, send with a progress bar (`COMPOSE-MOVE 2` stream)
+6. Remote `receive` writes the folder disabled under `APPS`, or under `ARCHIVE` when the source was archived; merges missing `.env` keys
+7. On APPS sources: disable locally if it was enabled; ask whether to delete the local folder. On archived sources: ask whether to remove from this archive.
 
-`dc key root@host` can remember a short name so later moves use `dc move plex host`. Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
+Both hosts need a current script (protocol `COMPOSE-MOVE 2`). `dc key root@host` can remember a short name so later moves use `dc move plex host`. Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
 
-Does not copy: bind mounts outside the service folder, named volumes, or the image (the other host pulls on start).
+Does not copy: bind mounts outside the service folder, named volumes, or the image (the other host pulls on start after unarchive/enable).
 
 ### receive
 

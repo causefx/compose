@@ -102,6 +102,8 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" == "unarchive" ]]; then
         COMPREPLY=( $(compgen -W "$opts_arch" -- "$cur") )
+    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" == "move" ]]; then
+        COMPREPLY=( $(compgen -W "$opts_s ${opts_arch#all }" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then
