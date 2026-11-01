@@ -43,8 +43,31 @@ _dc_apps_dir() {
     printf '%s' "$COMPOSE_HOME"
 }
 
+_dc_archive_dir() {
+    local env_file="$COMPOSE_HOME/.env"
+    local apps line value
+
+    apps="$(_dc_apps_dir)"
+    if [[ -f "$env_file" ]]; then
+        line="$(grep -E '^[[:space:]]*ARCHIVE=' "$env_file" | tail -n 1)"
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+        value="${value//\$APPS/$apps}"
+        if [[ -n "$value" ]]; then
+            printf '%s' "$value"
+            return
+        fi
+    fi
+    printf '%s' "$apps/.archive"
+}
+
 _dc_completions() {
-    local cur opts_a opts_s apps dir name
+    local cur opts_a opts_s opts_arch apps archive dir name
     cur="${COMP_WORDS[COMP_CWORD]}"
 
     opts_a="$(awk '
@@ -63,6 +86,13 @@ _dc_completions() {
         name="$(basename "$dir")"
         opts_s+=" $name"
     done
+    archive="$(_dc_archive_dir)"
+    opts_arch="all"
+    for dir in "$archive"/*/; do
+        [[ -d "$dir" ]] || continue
+        name="$(basename "$dir")"
+        opts_arch+=" $name"
+    done
 
     if [[ "$COMP_CWORD" -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
@@ -70,6 +100,8 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "list add remove" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" == "docs" ]]; then
         COMPREPLY=( $(compgen -W "$opts_a" -- "$cur") )
+    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" == "unarchive" ]]; then
+        COMPREPLY=( $(compgen -W "$opts_arch" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then

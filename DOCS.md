@@ -21,6 +21,7 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 - Each service is a folder under `APPS`, for example `APPS/plex/`
 - **Enabled** — folder contains `COMPOSE_FILE` (default `docker-compose.yml`)
 - **Disabled** — compose file renamed to `COMPOSE_FILE_DISABLED`
+- **Archived** — disabled service folder moved under `ARCHIVE` (default `APPS/.archive/`); hidden from normal run/list loops until unarchived
 - **Stub** — `STUB_FILE` template used by `create` (usually the repo `docker-compose.yml`)
 - **Env** — project `.env` next to `compose.sh` (never overwritten by update)
 - **Service env files** — any `.env`, `.env.*`, or `*.env` in a service folder is also passed to Compose (after the project `.env`). Later files can override earlier keys. Skips `*.bak`, `*.example`, and `*.sample`.
@@ -147,7 +148,7 @@ Prefers an enabled compose file; a disabled file is allowed with a warning.
 
 ### list
 
-List service folders with Compose project status and an **env** column (`yes` when the folder has a service env file, `-` otherwise). Enabled services first; if both groups exist, a dim `disabled` label separates the second group.
+List service folders with Compose project status and an **env** column (`yes` when the folder has a service env file, `-` otherwise). Enabled first, then dim `disabled`, then dim `archived`. Footer counts all three.
 
 ```bash
 dc list
@@ -290,6 +291,26 @@ Rename the enabled compose file to the disabled name.
 dc disable plex
 ```
 
+### archive
+
+Move a **disabled** service folder into `ARCHIVE` (default `APPS/.archive/`). Enabled services must be disabled first. Stays out of normal `list`/run loops until unarchived. With no service name, lists archived services. `all` archives every currently disabled service after confirm.
+
+```bash
+dc archive
+dc archive plex
+dc archive all
+```
+
+### unarchive
+
+Move an archived service folder back under `APPS`. It remains **disabled** until you `dc enable`. With no service name, lists archived services. `all` restores every archived service after confirm.
+
+```bash
+dc unarchive
+dc unarchive plex
+dc unarchive all
+```
+
 ### create
 
 Create a new service folder from the stub. Asks for the service name (if missing) and image. Writes a **disabled** compose file with `{{SERVICE}}` and `{{IMAGE}}` replaced. Edit it, then `dc enable` / `dc up`.
@@ -348,7 +369,7 @@ dc where PUID
 
 Rewrite `.env` into clean sections after you confirm:
 
-1. Script Settings (`APPS`, compose filenames, stub, `STARTING_PORT`, …)
+1. Script Settings (`APPS`, `ARCHIVE`, compose filenames, stub, `STARTING_PORT`, …)
 2. Universal Settings
 3. User Specific Settings (`PUID`, `PGID`, `TZ`)
 4. Ports — every `*_PORT_*` key, sorted by port value ascending
@@ -520,6 +541,7 @@ From `.env.example` and script usage:
 | Variable | Role |
 |----------|------|
 | `APPS` | Root of service folders |
+| `ARCHIVE` | Root for archived services (default `APPS/.archive`) |
 | `COMPOSE_FILE` | Enabled compose filename |
 | `COMPOSE_FILE_DISABLED` | Disabled compose filename |
 | `STUB_FILE` | Template for `create` |

@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.55
-### ChangeNotes: where keeps the env var name case.
+VERSION=v1.7.56
+### ChangeNotes: archive and unarchive disabled services.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -148,6 +148,8 @@ prune|Remove unused Docker data|prune
 # @group Services
 enable|Enable service(s)|enable
 disable|Disable service(s)|disable
+archive|Archive disabled service(s)|archive
+unarchive|Restore archived service(s)|unarchive
 create|Create service|create
 remove|Remove service|remove
 move|Move a service to another host|move
@@ -263,6 +265,9 @@ RequireVar() {
 
 CheckEnvVariables() {
     RequireVar COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE APPS
+    if [[ -z "${ARCHIVE:-}" ]]; then
+        ARCHIVE="$APPS/.archive"
+    fi
 }
 
 ServiceDirs() {
@@ -270,6 +275,22 @@ ServiceDirs() {
     shopt -q nullglob && had=1
     shopt -s nullglob
     for dir in "$APPS"/*/; do
+        [[ -d "$dir" ]] && printf '%s\n' "$dir"
+    done
+    [[ "$had" -eq 1 ]] || shopt -u nullglob
+}
+
+ArchiveDir() {
+    printf '%s\n' "${ARCHIVE%/}"
+}
+
+ArchivedServiceDirs() {
+    local root had=0 dir
+    root="$(ArchiveDir)"
+    [[ -d "$root" ]] || return 0
+    shopt -q nullglob && had=1
+    shopt -s nullglob
+    for dir in "$root"/*/; do
         [[ -d "$dir" ]] && printf '%s\n' "$dir"
     done
     [[ "$had" -eq 1 ]] || shopt -u nullglob
@@ -379,6 +400,8 @@ CheckAction() {
                 Say warn "Disabling $folder"
                 Toggle disable "$folder"
                 ;;
+            archive) Archive ;;
+            unarchive) Unarchive ;;
             list) List ;;
             ps) Ps ;;
             issue) Issue ;;
@@ -606,8 +629,9 @@ ServiceEnvLabel() {
 }
 
 List() {
-    local dir path status env_label env_color width enabled_count=0 disabled_count=0 i
+    local dir path status env_label env_color width enabled_count=0 disabled_count=0 archived_count=0 i
     local -a en_name=() en_status=() en_env=() dis_name=() dis_status=() dis_env=()
+    local -a ar_name=() ar_env=()
     Banner "list"
     LoadProjectStatus
     while IFS= read -r dir; do
@@ -630,11 +654,18 @@ List() {
             disabled_count=$((disabled_count+1))
         fi
     done < <(ServiceDirs)
-    if [[ ${#en_name[@]} -eq 0 && ${#dis_name[@]} -eq 0 ]]; then
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        path="$(basename "$dir")"
+        ar_name+=("$path")
+        ar_env+=("$(ServiceEnvLabel "$dir")")
+        archived_count=$((archived_count+1))
+    done < <(ArchivedServiceDirs)
+    if [[ ${#en_name[@]} -eq 0 && ${#dis_name[@]} -eq 0 && ${#ar_name[@]} -eq 0 ]]; then
         Say info "No services."
         return
     fi
-    width="$(ColumnWidth 7 "${en_name[@]}" "${dis_name[@]}")"
+    width="$(ColumnWidth 7 "${en_name[@]}" "${dis_name[@]}" "${ar_name[@]}")"
     printf "%b     %s  │  %s  │  %s%b\n" "$c_dim" \
         "$(PadRight "service" "$width")" \
         "$(PadRight "env" 3)" \
@@ -674,8 +705,27 @@ List() {
                 "$(PaintStatus "${dis_status[$i]}")"
         done
     fi
+    if [[ ${#ar_name[@]} -gt 0 ]]; then
+        [[ ${#en_name[@]} -gt 0 || ${#dis_name[@]} -gt 0 ]] && printf "\n  %barchived%b\n" "$c_dim" "$c_reset"
+        for i in "${!ar_name[@]}"; do
+            if [[ "${ar_env[$i]}" == "yes" ]]; then
+                env_label="yes"
+                env_color="$c_teal"
+            else
+                env_label="-"
+                env_color="$c_dim"
+            fi
+            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+                "$c_dim" "▢" "$c_reset" \
+                "$(PadRight "${ar_name[$i]}" "$width")" \
+                "$c_dim" "$c_reset" \
+                "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
+                "$c_dim" "$c_reset" \
+                "${c_dim}archived${c_reset}"
+        done
+    fi
     printf "\n"
-    Say info "$enabled_count enabled · $disabled_count disabled"
+    Say info "$enabled_count enabled · $disabled_count disabled · $archived_count archived"
 }
 
 Toggle() {
@@ -710,6 +760,237 @@ Toggle() {
     else
         Say warn "Service disabled."
     fi
+}
+
+ListArchived() {
+    local dir path env_label env_color width i
+    local -a names=() envs=()
+
+    while IFS='|' read -r path env_label; do
+        [[ -n "$path" ]] || continue
+        names+=("$path")
+        envs+=("$env_label")
+    done < <(
+        while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            path="$(basename "$dir")"
+            printf '%s|%s\n' "$path" "$(ServiceEnvLabel "$dir")"
+        done < <(ArchivedServiceDirs) | LC_ALL=C sort -t '|' -k1,1
+    )
+    if [[ ${#names[@]} -eq 0 ]]; then
+        Say info "No archived services."
+        Say info "Archive root: $(ArchiveDir)"
+        return 0
+    fi
+    width="$(ColumnWidth 7 "${names[@]}")"
+    printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "env" "$c_reset"
+    for i in "${!names[@]}"; do
+        if [[ "${envs[$i]}" == "yes" ]]; then
+            env_label="yes"
+            env_color="$c_teal"
+        else
+            env_label="-"
+            env_color="$c_dim"
+        fi
+        printf "  %b%s%b  %s  %b│%b  %b%s%b\n" \
+            "$c_dim" "▢" "$c_reset" \
+            "$(PadRight "${names[$i]}" "$width")" \
+            "$c_dim" "$c_reset" \
+            "$env_color" "$env_label" "$c_reset"
+    done
+    printf "\n"
+    Say info "${#names[@]} archived · $(ArchiveDir)"
+}
+
+ArchiveOne() {
+    local name="$1"
+    local src dest root answer
+
+    if ! ValidServiceName "$name"; then
+        Say bad "Archive needs a service name."
+        Say info "dc archive plex"
+        Say info "dc archive all"
+        return 1
+    fi
+    src="$APPS/$name"
+    root="$(ArchiveDir)"
+    dest="$root/$name"
+    if [[ -d "$dest" && ! -d "$src" ]]; then
+        Say info "Already archived: $name"
+        Say info "dc unarchive $name"
+        return 1
+    fi
+    if [[ ! -d "$src" ]]; then
+        Say bad "Service does not exist."
+        return 1
+    fi
+    if [[ -f "$src/$COMPOSE_FILE" ]]; then
+        Say bad "Service is enabled. Disable it first."
+        Say info "dc disable $name"
+        return 1
+    fi
+    if [[ ! -f "$src/$COMPOSE_FILE_DISABLED" ]]; then
+        Say bad "Service has no disabled compose file."
+        return 1
+    fi
+    if [[ -e "$dest" ]]; then
+        Say bad "Archive already has $name."
+        return 1
+    fi
+    answer="$(Ask "Archive disabled service $name? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left $name in place."
+        return 0
+    fi
+    mkdir -p "$root" || {
+        Say bad "Could not create archive directory."
+        return 1
+    }
+    if ! mv -- "$src" "$dest"; then
+        Say bad "Could not move $name to archive."
+        return 1
+    fi
+    Say ok "Archived $name."
+    Say info "dc unarchive $name"
+    return 0
+}
+
+UnarchiveOne() {
+    local name="$1"
+    local src dest root answer
+
+    if ! ValidServiceName "$name"; then
+        Say bad "Unarchive needs a service name."
+        Say info "dc unarchive plex"
+        Say info "dc unarchive all"
+        return 1
+    fi
+    root="$(ArchiveDir)"
+    src="$root/$name"
+    dest="$APPS/$name"
+    if [[ ! -d "$src" ]]; then
+        Say bad "Archived service does not exist."
+        return 1
+    fi
+    if [[ -e "$dest" ]]; then
+        Say bad "Service already exists under APPS: $name"
+        return 1
+    fi
+    answer="$(Ask "Unarchive $name as disabled? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left $name archived."
+        return 0
+    fi
+    mkdir -p "$APPS" || {
+        Say bad "Could not use APPS directory."
+        return 1
+    }
+    if ! mv -- "$src" "$dest"; then
+        Say bad "Could not move $name back to APPS."
+        return 1
+    fi
+    Say ok "Unarchived $name (still disabled)."
+    Say info "dc enable $name"
+    return 0
+}
+
+Archive() {
+    local dir path src dest answer ok=0 fail=0
+    local -a targets=()
+
+    Banner "archive"
+    if [[ -z "${folder:-}" ]]; then
+        ListArchived
+        return 0
+    fi
+    if [[ "$folder" == "all" ]]; then
+        while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            path="$(basename "$dir")"
+            [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]] || continue
+            [[ -f "$dir/$COMPOSE_FILE" ]] && continue
+            targets+=("$path")
+        done < <(ServiceDirs)
+        if [[ ${#targets[@]} -eq 0 ]]; then
+            Say info "No disabled services to archive."
+            return 0
+        fi
+        Say info "${#targets[@]} disabled service(s)"
+        answer="$(Ask "Archive all disabled services? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left services in place."
+            return 0
+        fi
+        mkdir -p "$(ArchiveDir)" || {
+            Say bad "Could not create archive directory."
+            return 1
+        }
+        for path in "${targets[@]}"; do
+            src="$APPS/$path"
+            dest="$(ArchiveDir)/$path"
+            if [[ -e "$dest" ]]; then
+                Say warn "Skip $path · already in archive."
+                fail=$((fail + 1))
+                continue
+            fi
+            if mv -- "$src" "$dest"; then
+                Say ok "Archived $path."
+                ok=$((ok + 1))
+            else
+                Say bad "Could not archive $path."
+                fail=$((fail + 1))
+            fi
+        done
+        Say info "$ok archived · $fail skipped"
+        return 0
+    fi
+    ArchiveOne "$folder"
+}
+
+Unarchive() {
+    local dir path src dest answer ok=0 fail=0
+    local -a targets=()
+
+    Banner "unarchive"
+    if [[ -z "${folder:-}" ]]; then
+        ListArchived
+        return 0
+    fi
+    if [[ "$folder" == "all" ]]; then
+        while IFS= read -r dir; do
+            [[ -n "$dir" ]] || continue
+            targets+=("$(basename "$dir")")
+        done < <(ArchivedServiceDirs)
+        if [[ ${#targets[@]} -eq 0 ]]; then
+            Say info "No archived services."
+            return 0
+        fi
+        Say info "${#targets[@]} archived service(s)"
+        answer="$(Ask "Unarchive all as disabled? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left services archived."
+            return 0
+        fi
+        for path in "${targets[@]}"; do
+            src="$(ArchiveDir)/$path"
+            dest="$APPS/$path"
+            if [[ -e "$dest" ]]; then
+                Say warn "Skip $path · already under APPS."
+                fail=$((fail + 1))
+                continue
+            fi
+            if mv -- "$src" "$dest"; then
+                Say ok "Unarchived $path."
+                ok=$((ok + 1))
+            else
+                Say bad "Could not unarchive $path."
+                fail=$((fail + 1))
+            fi
+        done
+        Say info "$ok unarchived · $fail skipped"
+        return 0
+    fi
+    UnarchiveOne "$folder"
 }
 
 ServiceDir() {
@@ -3070,7 +3351,7 @@ TidyEnv() {
 
     out="$(mktemp)" || exit 1
     TidyEnvWriteSection "$out" "Script Settings" \
-        APPS COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE STARTING_PORT
+        APPS ARCHIVE COMPOSE_FILE COMPOSE_FILE_DISABLED STUB_FILE STARTING_PORT
     TidyEnvWriteSection "$out" "Universal Settings" \
         COMPOSE_VERSION COMPOSE_HTTP_TIMEOUT DOCKER_CLIENT_TIMEOUT \
         DOCKERLOGGING_MAXFILE DOCKERLOGGING_MAXSIZE TIME DOCKER_SOCK
