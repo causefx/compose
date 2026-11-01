@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.50
-### ChangeNotes: envs lists compose vars for a service.
+VERSION=v1.7.51
+### ChangeNotes: envs values expands nested env references.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1732,8 +1732,48 @@ LookupEnvAssignment() {
     [[ -n "$found" ]] && printf '%s\n' "$found"
 }
 
+# Load project then service env files into the shell (last wins).
+# Unquoted and double-quoted values expand like Compose; single-quoted stay literal.
+ApplyEnvFilesForService() {
+    local compose_file="$1"
+    local file
+
+    ApplyEnvFileToShell() {
+        local f="$1"
+        local line key raw val
+        [[ -f "$f" ]] || return 0
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line//$'\r'/}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+            key="${BASH_REMATCH[1]}"
+            raw="${BASH_REMATCH[2]}"
+            if [[ "$raw" == \'*\' ]]; then
+                val="${raw:1:${#raw}-2}"
+            elif [[ "$raw" == \"*\" ]]; then
+                val="$(ExpandComposeValue "${raw:1:${#raw}-2}")"
+            else
+                raw="${raw#"${raw%%[![:space:]]*}"}"
+                raw="${raw%"${raw##*[![:space:]]}"}"
+                val="$(ExpandComposeValue "$raw")"
+            fi
+            printf -v "$key" '%s' "$val"
+        done < "$f"
+    }
+
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        ApplyEnvFileToShell "$envFile"
+    fi
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        ApplyEnvFileToShell "$file"
+    done < <(ServiceEnvFiles "$compose_file")
+}
+
 Envs() {
-    local file show_values=0 arg name width line value color
+    local file show_values=0 arg name width value color
     local -a names=()
     local missing=0
 
@@ -1781,12 +1821,12 @@ Envs() {
         done
         return 0
     fi
+    ApplyEnvFilesForService "$file"
     width="$(ColumnWidth 3 "${names[@]}")"
     printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "var" "$width")" "value" "$c_reset"
     for name in "${names[@]}"; do
-        line="$(LookupEnvAssignment "$name" "$file")"
-        if [[ -n "$line" ]]; then
-            value="${line#*=}"
+        if VarIsSet "$name"; then
+            value="$(VarValue "$name")"
             color="$c_reset"
         else
             value="-"

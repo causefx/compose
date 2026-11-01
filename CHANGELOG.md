@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.51 envs values expands nested env references
 ### 1.7.50 envs lists compose vars for a service
 ### 1.7.49 version only offers update when remote is newer
 ### 1.7.48 list env dash no longer breaks printf
