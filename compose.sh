@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.43
-### ChangeNotes: env edits the project file or a service .env.
+VERSION=v1.7.44
+### ChangeNotes: version asks to update again on a normal terminal.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -52,14 +52,19 @@ Say() {
 }
 
 NonInteractive() {
+    # Scheduled jobs set this. Do not key off stdout: Ask runs inside $(), so
+    # stdout is a pipe even on a normal terminal.
     [[ "${COMPOSE_NONINTERACTIVE:-0}" == 1 ]] && return 0
-    [[ ! -t 0 && ! -t 1 ]] && return 0
-    return 1
+    if { : </dev/tty >/dev/tty; } 2>/dev/null; then
+        return 1
+    fi
+    [[ -t 0 ]] && return 1
+    return 0
 }
 
 Ask() {
     local reply
-    if NonInteractive; then
+    if [[ "${COMPOSE_NONINTERACTIVE:-0}" == 1 ]]; then
         printf '%s' ""
         return 0
     fi
