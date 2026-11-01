@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.60
-### ChangeNotes: move reads project and service env files.
+VERSION=v1.7.61
+### ChangeNotes: move checks pack permissions before confirm.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -2727,6 +2727,37 @@ ProgressBar() {
     printf '\r  %b%s%s%b  %s  %-8s %3d%%' "$c_teal" "$bar" "$empty" "$c_reset" "$mark" "$label" "$pct" >&2
 }
 
+# Print paths under $1 that this user cannot read (or enter, for dirs).
+UnreadableUnder() {
+    local root="$1"
+    local path err line shown
+    local -A seen=()
+
+    [[ -d "$root" ]] || return 0
+    err="$(mktemp)" || return 0
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        [[ -n "${seen[$path]+x}" ]] && continue
+        seen["$path"]=1
+        printf '%s\n' "$path"
+    done < <(find "$root" \( ! -readable -o \( -type d ! -executable \) \) -print 2>"$err")
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == *"Permission denied"* ]] || continue
+        shown="${line#find: }"
+        shown="${shown#: Permission denied}"
+        shown="${shown#\'}"
+        shown="${shown%\'}"
+        shown="${shown#\`}"
+        shown="${shown%\`}"
+        shown="${shown#: Permission denied}"
+        [[ -n "$shown" ]] || continue
+        [[ -n "${seen[$shown]+x}" ]] && continue
+        seen["$shown"]=1
+        printf '%s\n' "$shown"
+    done < "$err"
+    rm -f "$err"
+}
+
 PackService() {
     local dest="$1"
     local pack_root="${2:-$APPS}"
@@ -2852,9 +2883,9 @@ StreamFile() {
 Move() {
     local host file service_dir pack_root size answer remote_info script_path apps_path
     local errfile remote_cmd name line key sent run_state header archive status stopped_for_move=0
-    local resolved loc archived_flag=0
+    local resolved loc archived_flag=0 rel shown
     local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=20 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
-    local -a env_lines=() missing=() skipped=()
+    local -a env_lines=() missing=() skipped=() unreadable=()
     local -a var_names=()
 
     Banner "move"
@@ -2932,6 +2963,15 @@ Move() {
         [[ -n "$line" ]] && skipped+=("$line")
     done < <(SkippedMounts "$file" "$service_dir")
 
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        rel="$line"
+        if [[ "$rel" == "$service_dir"/* ]]; then
+            rel="${folder}/${rel#"$service_dir"/}"
+        fi
+        unreadable+=("$rel")
+    done < <(UnreadableUnder "$service_dir")
+
     Say info "Folder size: $size"
     Say info "Destination: $host"
     Say info "Apps path: $apps_path"
@@ -2955,6 +2995,21 @@ Move() {
     fi
     if [[ ${#missing[@]} -gt 0 ]]; then
         Say warn "No value here for: ${missing[*]}"
+    fi
+    if [[ ${#unreadable[@]} -gt 0 ]]; then
+        Say bad "Cannot pack: ${#unreadable[@]} path(s) are not readable."
+        shown=0
+        for rel in "${unreadable[@]}"; do
+            printf '    %s\n' "$rel"
+            shown=$((shown + 1))
+            if [[ "$shown" -ge 20 && "$shown" -lt ${#unreadable[@]} ]]; then
+                Say info "… and $(( ${#unreadable[@]} - shown )) more"
+                break
+            fi
+        done
+        Say info "Fix ownership, then retry. Example:"
+        Say info "sudo chown -R \"\$USER:\" $service_dir"
+        exit 1
     fi
     answer="$(Ask "Move $folder to $host? [y/N]")"
     if [[ "$answer" != [yY] ]]; then

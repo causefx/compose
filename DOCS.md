@@ -410,10 +410,11 @@ Flow:
 1. Contact the host over SSH (BatchMode, public key only — no password prompt)
 2. Discover remote `compose.sh` and `APPS` from that host’s `dc.bash` source line
 3. Show size, destination, env keys from the project `.env` **and** that service’s env files (last wins), skipped outside mounts (and that an archived move stays archived)
-4. Confirm move; for APPS services, optionally stop running containers first (skipped when already archived)
-5. Pack with a progress bar, send with a progress bar (`COMPOSE-MOVE 2` stream)
-6. Remote `receive` writes the folder disabled under `APPS`, or under `ARCHIVE` when the source was archived; merges missing project `.env` keys (service env files travel inside the folder)
-7. On APPS sources: disable locally if it was enabled; ask whether to delete the local folder. On archived sources: ask whether to remove from this archive.
+4. Abort before confirm if any path under the service folder is not readable by the current user (typical root-owned container data)
+5. Confirm move; for APPS services, optionally stop running containers first (skipped when already archived)
+6. Pack with a progress bar, send with a progress bar (`COMPOSE-MOVE 2` stream)
+7. Remote `receive` writes the folder disabled under `APPS`, or under `ARCHIVE` when the source was archived; merges missing project `.env` keys (service env files travel inside the folder)
+8. On APPS sources: disable locally if it was enabled; ask whether to delete the local folder. On archived sources: ask whether to remove from this archive.
 
 Both hosts need a current script (protocol `COMPOSE-MOVE 2`). `dc key root@host` can remember a short name so later moves use `dc move plex host` (tab-completes those names). Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
 
