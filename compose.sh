@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.63
-### ChangeNotes: envs fill seeds missing service env keys.
+VERSION=v1.7.64
+### ChangeNotes: up can enable a disabled service after confirm.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1453,8 +1453,29 @@ RunServices() {
         return
     fi
     if [[ -f "$APPS/$service/$COMPOSE_FILE_DISABLED" ]]; then
+        local answer
         Say warn "Service is disabled."
-        exit 1
+        case "$verb" in
+            up|start|restart|build)
+                answer="$(Ask "Enable $service and $verb? [y/N]")"
+                if [[ "$answer" != [yY] ]]; then
+                    Say info "Left $service disabled."
+                    exit 1
+                fi
+                mv -- "$APPS/$service/$COMPOSE_FILE_DISABLED" "$APPS/$service/$COMPOSE_FILE" || {
+                    Say bad "Could not enable $service."
+                    exit 1
+                }
+                Say ok "Enabled $service."
+                printf "%b── %s ──%b\n" "$c_blue" "$service" "$c_reset"
+                RunOneCompose "$APPS/$service/$COMPOSE_FILE" "$@" || exit 1
+                return
+                ;;
+            *)
+                Say info "dc enable $service"
+                exit 1
+                ;;
+        esac
     fi
     Say bad "Service does not exist."
     exit 1

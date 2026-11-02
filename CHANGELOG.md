@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.64 up can enable a disabled service after confirm
 ### 1.7.63 envs fill seeds missing service env keys
 ### 1.7.62 backups go in a .backup folder
 ### 1.7.61 move checks pack permissions before confirm

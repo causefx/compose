@@ -62,7 +62,7 @@ dc up all
 dc up
 ```
 
-With no service name, asks whether to loop all services. Batch mode prints one brief line per service when nothing changes; Compose output stays on screen when something changes or fails. Loads the project `.env` plus any env files in that service’s folder.
+With no service name, asks whether to loop all services. Batch mode prints one brief line per service when nothing changes; Compose output stays on screen when something changes or fails. Loads the project `.env` plus any env files in that service’s folder. If the named service is **disabled**, asks to enable it and continue (`start`, `restart`, and `build` do the same).
 
 ### down
 
