@@ -352,9 +352,12 @@ With no service name, opens the project `.env`. With a service name, opens that 
 
 List `${VAR}` / `$VAR` names referenced in a service’s compose file as a table with a **from** column: `shared` (project `.env`) or `service` (that folder’s env file). Rows sort by source (`shared`, then `service`, then unset), then name A–Z. Last file wins when both define the key. Add `values` for an expanded value column (nested refs like `${MEDIA}/photos` resolve the same way Compose does). Unset keys show `-`.
 
+`fill` creates `$APPS/<service>/.env` if needed and appends every unset compose var as `KEY=` (empty value), then offers to open the editor.
+
 ```bash
 dc envs plex
 dc envs plex values
+dc envs plex fill
 ```
 
 ### where

@@ -122,7 +122,7 @@ _dc_completions() {
         opts_hosts="$(_dc_compose_hosts)"
         COMPREPLY=( $(compgen -W "$opts_hosts" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then
-        COMPREPLY=( $(compgen -W "values" -- "$cur") )
+        COMPREPLY=( $(compgen -W "values fill" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "schedule" && ( "${COMP_WORDS[2]}" == "add" || "${COMP_WORDS[2]}" == "remove" ) ]]; then
         COMPREPLY=( $(compgen -W "pull update tidy issue images ports df hosts nextport version list ps" -- "$cur") )
     fi

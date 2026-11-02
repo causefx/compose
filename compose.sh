@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.62
-### ChangeNotes: backups go in a .backup folder.
+VERSION=v1.7.63
+### ChangeNotes: envs fill seeds missing service env keys.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -156,7 +156,7 @@ move|Move a service to another host|move
 receive|Receive a service from another host|receive
 edit|Edit service|edit
 env|Edit project or service env file|env
-envs|List env vars used by a service|envs
+envs|List or fill env vars for a service|envs
 where|Show where an env var is used|where
 tidy|Organize the env file and sort ports|tidy
 restore|Restore .env from the tidy backup|restore
@@ -2163,8 +2163,60 @@ ApplyEnvFilesForService() {
     done < <(ServiceEnvFiles "$compose_file")
 }
 
+EnvsFill() {
+    local file="$1"
+    local target="$APPS/$folder/.env"
+    local name answer created=0
+    local -a missing=()
+
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        [[ -z "$(LookupEnvSource "$name" "$file")" ]] && missing+=("$name")
+    done < <(ComposeVarNames "$file" | LC_ALL=C sort -u)
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        Say ok "All compose vars are set for $folder."
+        return 0
+    fi
+
+    Say info "$folder · ${#missing[@]} unset"
+    for name in "${missing[@]}"; do
+        printf "  %b%s%b=\n" "$c_teal" "$name" "$c_reset"
+    done
+    printf "\n"
+    answer="$(Ask "Add these to $folder/.env with empty values? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left $folder/.env unchanged."
+        return 0
+    fi
+    if [[ ! -f "$target" ]]; then
+        printf '# %s service env\n' "$folder" >"$target" || {
+            Say bad "Could not create $target."
+            exit 1
+        }
+        created=1
+        Say ok "Created $target"
+    fi
+    {
+        printf '\n# filled by dc envs fill\n'
+        for name in "${missing[@]}"; do
+            printf '%s=\n' "$name"
+        done
+    } >>"$target" || {
+        Say bad "Could not write $target."
+        exit 1
+    }
+    Say ok "Added ${#missing[@]} key(s) to $target."
+    answer="$(Ask "Edit $folder/.env now? [Y/n]")"
+    if [[ -z "$answer" || "$answer" == [yY] ]]; then
+        OpenEditor "$target"
+    elif [[ "$created" -eq 1 ]]; then
+        Say info "dc env $folder"
+    fi
+}
+
 Envs() {
-    local file show_values=0 arg name width from_w=7 source value src_color val_color rank
+    local file show_values=0 do_fill=0 arg name width from_w=7 source value src_color val_color rank
     local -a names=() rows=()
     local missing=0
 
@@ -2172,18 +2224,25 @@ Envs() {
     for arg in "${EXTRA_ARGS[@]}"; do
         case "$arg" in
             values|--values|-v) show_values=1 ;;
+            fill|--fill) do_fill=1 ;;
             *)
                 Say bad "Unknown argument: $arg"
                 Say info "dc envs plex"
                 Say info "dc envs plex values"
+                Say info "dc envs plex fill"
                 exit 1
                 ;;
         esac
     done
+    if [[ "$show_values" -eq 1 && "$do_fill" -eq 1 ]]; then
+        Say bad "Use values or fill, not both."
+        exit 1
+    fi
     if ! ValidServiceName "${folder:-}"; then
         Say bad "Envs needs a service name."
         Say info "dc envs plex"
         Say info "dc envs plex values"
+        Say info "dc envs plex fill"
         exit 1
     fi
     if [[ ! -d "$APPS/$folder" ]]; then
@@ -2197,6 +2256,10 @@ Envs() {
     else
         Say bad "Service does not exist."
         exit 1
+    fi
+    if [[ "$do_fill" -eq 1 ]]; then
+        EnvsFill "$file"
+        return 0
     fi
     while IFS= read -r name; do
         [[ -n "$name" ]] && names+=("$name")
