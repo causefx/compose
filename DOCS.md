@@ -471,6 +471,8 @@ compose.sh -a receive -s plex   # fed by move over SSH
 
 Print the local version. If a higher GitHub version exists, asks whether to install it. A local build ahead of GitHub does not prompt.
 
+Releases use **major.feature.fix**: feature bumps the middle number and resets fix to `0`; fixes bump the last number; breaking changes bump major.
+
 ```bash
 dc version
 ```

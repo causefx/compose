@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.67
-### ChangeNotes: rename asks before rewriting env keys.
+VERSION=v1.8.0
+### ChangeNotes: versioning is major.feature.fix; rename asks before env keys.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
