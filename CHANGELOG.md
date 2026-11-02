@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.7.67 rename asks before rewriting env keys
 ### 1.7.66 add appends another app to a service compose file
 ### 1.7.65 rename renames a service folder and safe env keys
 ### 1.7.64 up can enable a disabled service after confirm

@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.66
-### ChangeNotes: add appends another app to a service compose file.
+VERSION=v1.7.67
+### ChangeNotes: rename asks before rewriting env keys.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -1415,20 +1415,27 @@ Rename() {
     else
         Say info "State: disabled"
     fi
-    Say info "Compose: rewrite name paths and ${#env_rename[@]} env ref(s)"
+    Say info "Compose: rewrite name paths"
     if [[ ${#env_rename[@]} -gt 0 ]]; then
-        Say info "Env keys to rename:"
+        Say info "Env keys that can rename (${#env_rename[@]}):"
         for line in "${env_rename[@]}"; do
             printf "    %s → %s\n" "${line%%|*}" "${line#*|}"
         done
     fi
     if [[ ${#env_skip[@]} -gt 0 ]]; then
-        Say warn "Env keys left unchanged: ${env_skip[*]}"
+        Say warn "Env keys left unchanged if renamed: ${env_skip[*]}"
         Say info "dc where KEY"
     fi
     if [[ ${#skipped[@]} -gt 0 ]]; then
         Say warn "Outside mounts stay as written:"
         printf '    %s\n' "${skipped[@]}"
+    fi
+    if [[ ${#env_rename[@]} -gt 0 ]]; then
+        answer="$(Ask "Also rename env keys ${old_prefix}_ → ${new_prefix}_? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            env_rename=()
+            Say info "Keeping env key names."
+        fi
     fi
     answer="$(Ask "Rename $old to $new? [y/N]")"
     if [[ "$answer" != [yY] ]]; then
