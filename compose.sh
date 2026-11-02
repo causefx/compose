@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.65
-### ChangeNotes: rename renames a service folder and safe env keys.
+VERSION=v1.7.66
+### ChangeNotes: add appends another app to a service compose file.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -151,6 +151,7 @@ disable|Disable service(s)|disable
 archive|Archive disabled service(s)|archive
 unarchive|Restore archived service(s)|unarchive
 create|Create service|create
+add|Add an app to a service compose file|add
 remove|Remove service|remove
 rename|Rename a service folder and env keys|rename
 move|Move a service to another host|move
@@ -417,6 +418,7 @@ CheckAction() {
                 Banner "create"
                 Create "$folder"
                 ;;
+            add) Add ;;
             remove) Remove "$folder" ;;
             rename) Rename ;;
             move) Move ;;
@@ -3903,6 +3905,124 @@ Create() {
     Say warn "Disabled until you edit the compose file."
     
     exit
+}
+
+# Compose service keys already in the file (best-effort).
+ComposeServiceKeys() {
+    local file="$1" key
+    if RunOneCompose "$file" config --services >/dev/null 2>&1; then
+        RunOneCompose "$file" config --services 2>/dev/null
+        return 0
+    fi
+    while IFS= read -r key; do
+        [[ -n "$key" ]] && printf '%s\n' "$key"
+    done < <(grep -E '^  [A-Za-z0-9._-]+:[[:space:]]*$' "$file" 2>/dev/null | sed -E 's/^  ([^:]+):.*/\1/')
+}
+
+Add() {
+    local file svc_key image cname port_prefix answer existing
+    local -a keys=()
+
+    Banner "add"
+    if ! ValidServiceName "${folder:-}"; then
+        Say bad "Add needs a service folder name."
+        Say info "dc add plex"
+        exit 1
+    fi
+    if [[ -d "$(ArchiveDir)/$folder" && ! -d "$APPS/$folder" ]]; then
+        Say bad "Service is archived."
+        Say info "dc unarchive $folder"
+        exit 1
+    fi
+    if [[ ! -d "$APPS/$folder" ]]; then
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE"
+    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
+    else
+        Say bad "Service does not exist."
+        exit 1
+    fi
+
+    while IFS= read -r existing; do
+        [[ -n "$existing" ]] && keys+=("$existing")
+    done < <(ComposeServiceKeys "$file")
+    if [[ ${#keys[@]} -gt 0 ]]; then
+        Say info "Existing apps: ${keys[*]}"
+    fi
+
+    svc_key="$(Ask "New app key (compose service name):")"
+    svc_key="${svc_key,,}"
+    svc_key="${svc_key// /-}"
+    if ! ValidServiceName "$svc_key"; then
+        Say bad "Invalid app key."
+        exit 1
+    fi
+    for existing in "${keys[@]}"; do
+        if [[ "$existing" == "$svc_key" ]]; then
+            Say bad "App key already exists: $svc_key"
+            exit 1
+        fi
+    done
+
+    image="$(Ask "Container image:")"
+    if [[ -z "$image" ]]; then
+        Say bad "Image not supplied."
+        exit 1
+    fi
+
+    cname="${folder}-${svc_key}"
+    port_prefix="$(ServiceEnvPrefix "$svc_key")"
+    Say info "Will append to $file"
+    Say info "container_name: $cname"
+    Say info "volume: \${APPS}/$folder/$svc_key"
+    Say info "port env: ${port_prefix}_PORT_80"
+    answer="$(Ask "Add $svc_key to $folder? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left $folder unchanged."
+        return 0
+    fi
+
+    {
+        printf '\n'
+        printf '  %s:\n' "$svc_key"
+        printf '    container_name: %s\n' "$cname"
+        printf '    hostname: %s\n' "$svc_key"
+        printf '    image: %s\n' "$image"
+        printf '    restart: unless-stopped\n'
+        printf '    network_mode: bridge\n'
+        printf '    ports:\n'
+        printf '      - ${%s_PORT_80}:80\n' "$port_prefix"
+        printf '    volumes:\n'
+        printf '      - ${APPS}/%s/%s:/config\n' "$folder" "$svc_key"
+        printf '      - ${TIME}\n'
+        printf '    environment:\n'
+        printf '      - PUID=${PUID}\n'
+        printf '      - PGID=${PGID}\n'
+        printf '      - TZ=${TZ}\n'
+        printf '    logging:\n'
+        printf '      driver: json-file\n'
+        printf '      options:\n'
+        printf '        max-file: ${DOCKERLOGGING_MAXFILE}\n'
+        printf '        max-size: ${DOCKERLOGGING_MAXSIZE}\n'
+    } >>"$file" || {
+        Say bad "Could not write $file."
+        exit 1
+    }
+    Say ok "Added $svc_key to $folder."
+    Say info "dc envs $folder fill"
+    Say info "dc edit $folder"
+    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
+        answer="$(Ask "Run up for $folder now? [y/N]")"
+        if [[ "$answer" == [yY] ]]; then
+            RunOneCompose "$file" up -d || exit 1
+        fi
+    else
+        Say warn "Service is disabled. dc enable $folder"
+    fi
 }
 
 TidyFixedHeader() {

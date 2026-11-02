@@ -321,6 +321,16 @@ dc create
 dc create myapp
 ```
 
+### add
+
+Append another app (Compose service) to an existing service folder’s compose file. Does not create a new `APPS/` folder.
+
+```bash
+dc add plex
+```
+
+Asks for a compose service key (e.g. `tautulli`) and image. Appends a stub-like block with `container_name` `{folder}-{key}`, volume `${APPS}/{folder}/{key}`, shared `PUID`/`PGID`/`TZ`/logging, and a `${KEY_PORT_80}` placeholder. Then suggests `envs fill` / `edit`, and offers `up` when the stack is enabled. Archived services must be unarchived first.
+
 ### remove
 
 Remove a service. Asks before deleting the folder (double confirm). Stops/removes containers if they exist.
