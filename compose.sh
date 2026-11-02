@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.7.64
-### ChangeNotes: up can enable a disabled service after confirm.
+VERSION=v1.7.65
+### ChangeNotes: rename renames a service folder and safe env keys.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -152,6 +152,7 @@ archive|Archive disabled service(s)|archive
 unarchive|Restore archived service(s)|unarchive
 create|Create service|create
 remove|Remove service|remove
+rename|Rename a service folder and env keys|rename
 move|Move a service to another host|move
 receive|Receive a service from another host|receive
 edit|Edit service|edit
@@ -417,6 +418,7 @@ CheckAction() {
                 Create "$folder"
                 ;;
             remove) Remove "$folder" ;;
+            rename) Rename ;;
             move) Move ;;
             receive) Receive ;;
             path) Path ;;
@@ -1144,6 +1146,353 @@ Remove() {
         fi
     else
         Say info "Keeping folder."
+    fi
+}
+
+# Folder name → ENV prefix (paperless-ngx → PAPERLESS_NGX).
+ServiceEnvPrefix() {
+    local n="$1"
+    n="${n^^}"
+    n="${n//-/_}"
+    printf '%s\n' "$n"
+}
+
+# Print other service names that reference or define $key (skip $self folder).
+VarExternalUsers() {
+    local key="$1" self="$2"
+    local dir path compose_file f
+    local -A seen=()
+
+    ScanDir() {
+        local d="$1"
+        path="$(basename "$d")"
+        [[ "$path" == "$self" ]] && return 0
+        if [[ -f "$d/$COMPOSE_FILE" ]]; then
+            compose_file="$d/$COMPOSE_FILE"
+        elif [[ -f "$d/$COMPOSE_FILE_DISABLED" ]]; then
+            compose_file="$d/$COMPOSE_FILE_DISABLED"
+        else
+            return 0
+        fi
+        if ComposeUsesVar "$compose_file" "$key" || ServiceEnvUsesVar "$compose_file" "$key"; then
+            [[ -n "${seen[$path]+x}" ]] && return 0
+            seen["$path"]=1
+            printf '%s\n' "$path"
+            return 0
+        fi
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            if [[ -n "$(EnvRawLine "$f" "$key")" ]]; then
+                [[ -n "${seen[$path]+x}" ]] && return 0
+                seen["$path"]=1
+                printf '%s\n' "$path"
+                return 0
+            fi
+        done < <(ServiceEnvFiles "$compose_file")
+    }
+
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        ScanDir "$dir"
+    done < <(ServiceDirs)
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        ScanDir "$dir"
+    done < <(ArchivedServiceDirs)
+}
+
+# Keys in project + this service env files starting with PREFIX_.
+CollectPrefixedEnvKeys() {
+    local prefix="$1" compose_file="$2"
+    local file line key
+    local -A seen=()
+
+    ScanFile() {
+        local f="$1"
+        [[ -f "$f" ]] || return 0
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line//$'\r'/}"
+            [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
+            key="${BASH_REMATCH[1]}"
+            [[ "$key" == "${prefix}_"* ]] || continue
+            [[ -n "${seen[$key]+x}" ]] && continue
+            seen["$key"]=1
+            printf '%s\n' "$key"
+        done < "$f"
+    }
+
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        ScanFile "$envFile"
+    fi
+    while IFS= read -r file; do
+        [[ -n "$file" ]] || continue
+        ScanFile "$file"
+    done < <(ServiceEnvFiles "$compose_file")
+}
+
+ReplaceEnvKeyInText() {
+    local text="$1" oldk="$2" newk="$3"
+    local result="" rest match
+    rest="$text"
+    while [[ -n "$rest" ]]; do
+        if [[ "$rest" == \$\$* ]]; then
+            result+='$$'
+            rest="${rest:2}"
+            continue
+        fi
+        if [[ "$rest" =~ ^\$\{$oldk\} ]]; then
+            result+="\${${newk}}"
+            rest="${rest:$((${#oldk} + 3))}"
+            continue
+        fi
+        if [[ "$rest" =~ ^\$$oldk([^A-Za-z0-9_]|$) ]]; then
+            match="${BASH_REMATCH[0]}"
+            result+="\$${newk}${match:$((${#oldk} + 1))}"
+            rest="${rest:${#match}}"
+            continue
+        fi
+        result+="${rest:0:1}"
+        rest="${rest:1}"
+    done
+    printf '%s' "$result"
+}
+
+RewriteEnvKeyInFile() {
+    local file="$1" oldk="$2" newk="$3"
+    local tmp line pre key val
+    [[ -f "$file" ]] || return 0
+    tmp="$(mktemp)" || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        if [[ "$line" =~ ^([[:space:]]*)([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            pre="${BASH_REMATCH[1]}"
+            key="${BASH_REMATCH[2]}"
+            val="${BASH_REMATCH[3]}"
+            [[ "$key" == "$oldk" ]] && key="$newk"
+            val="$(ReplaceEnvKeyInText "$val" "$oldk" "$newk")"
+            printf '%s%s=%s\n' "$pre" "$key" "$val" >>"$tmp"
+        else
+            printf '%s\n' "$line" >>"$tmp"
+        fi
+    done < "$file"
+    mv "$tmp" "$file"
+}
+
+RewriteComposeServiceName() {
+    local file="$1" old="$2" new="$3"
+    local tmp line indent key raw q
+    [[ -f "$file" ]] || return 0
+    tmp="$(mktemp)" || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        line="${line//\$\{APPS\}\/${old}/\$\{APPS\}\/${new}}"
+        if [[ "$line" =~ ^([[:space:]]*)(name|container_name|hostname):[[:space:]]*(.*)$ ]]; then
+            indent="${BASH_REMATCH[1]}"
+            key="${BASH_REMATCH[2]}"
+            raw="${BASH_REMATCH[3]}"
+            raw="${raw%"${raw##*[![:space:]]}"}"
+            q=""
+            if [[ "$raw" == \"*\" && "$raw" == *\" ]]; then
+                q='"'
+                raw="${raw:1:${#raw}-2}"
+            elif [[ "$raw" == \'*\' && "$raw" == *\' ]]; then
+                q="'"
+                raw="${raw:1:${#raw}-2}"
+            fi
+            if [[ "$raw" == "$old" ]]; then
+                printf '%s%s: %s%s%s\n' "$indent" "$key" "$q" "$new" "$q" >>"$tmp"
+                continue
+            fi
+        fi
+        printf '%s\n' "$line" >>"$tmp"
+    done < "$file"
+    mv "$tmp" "$file"
+}
+
+RewriteComposeEnvKeys() {
+    local file="$1"
+    shift
+    local tmp line oldk newk pair
+    local -a pairs=("$@")
+    [[ -f "$file" ]] || return 0
+    [[ ${#pairs[@]} -eq 0 ]] && return 0
+    tmp="$(mktemp)" || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        for pair in "${pairs[@]}"; do
+            oldk="${pair%%=*}"
+            newk="${pair#*=}"
+            line="$(ReplaceEnvKeyInText "$line" "$oldk" "$newk")"
+        done
+        printf '%s\n' "$line" >>"$tmp"
+    done < "$file"
+    mv "$tmp" "$file"
+}
+
+Rename() {
+    local old new resolved loc src dest parent compose_file enabled=0 answer run_state
+    local old_prefix new_prefix key new_key line ef
+    local -a env_rename=() env_skip=() skipped=() external=()
+    local -a rewrite_pairs=()
+
+    Banner "rename"
+    old="${folder:-}"
+    new="${EXTRA_ARGS[0]:-}"
+    new="${new,,}"
+    if ! ValidServiceName "$old"; then
+        Say bad "Rename needs the current service name."
+        Say info "dc rename old-name new-name"
+        exit 1
+    fi
+    if [[ ${#EXTRA_ARGS[@]} -ne 1 ]] || ! ValidServiceName "$new"; then
+        Say bad "Rename needs one new service name."
+        Say info "dc rename old-name new-name"
+        exit 1
+    fi
+    if [[ "$old" == "$new" ]]; then
+        Say info "Names are the same."
+        return 0
+    fi
+    if ! resolved="$(ResolveServiceRoot "$old")"; then
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    src="${resolved%%|*}"
+    loc="${resolved##*|}"
+    if [[ "$loc" == "archive" ]]; then
+        parent="$(ArchiveDir)"
+    else
+        parent="$APPS"
+    fi
+    dest="$parent/$new"
+    if [[ -e "$APPS/$new" || -e "$(ArchiveDir)/$new" ]]; then
+        Say bad "Target name already exists."
+        exit 1
+    fi
+    if ! compose_file="$(ServiceComposeFile "$src")"; then
+        Say bad "Service does not exist."
+        exit 1
+    fi
+    [[ -f "$src/$COMPOSE_FILE" ]] && enabled=1
+
+    old_prefix="$(ServiceEnvPrefix "$old")"
+    new_prefix="$(ServiceEnvPrefix "$new")"
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        new_key="${new_prefix}_${key#"${old_prefix}_"}"
+        if [[ "$new_key" == "$key" ]]; then
+            continue
+        fi
+        external=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && external+=("$line")
+        done < <(VarExternalUsers "$key" "$old")
+        if [[ ${#external[@]} -gt 0 ]]; then
+            env_skip+=("$key")
+            Say warn "$key also used in: ${external[*]}"
+            continue
+        fi
+        if [[ -n "$(LookupEnvAssignment "$new_key" "$compose_file")" ]]; then
+            Say warn "Skip $key → $new_key · target key already set."
+            env_skip+=("$key")
+            continue
+        fi
+        env_rename+=("$key|$new_key")
+    done < <(CollectPrefixedEnvKeys "$old_prefix" "$compose_file" | LC_ALL=C sort -u)
+
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && skipped+=("$line")
+    done < <(SkippedMounts "$compose_file" "$src")
+
+    Say info "From: $src ($loc)"
+    Say info "To:   $dest"
+    if [[ "$enabled" -eq 1 ]]; then
+        Say info "State: enabled → will end disabled"
+    elif [[ "$loc" == "archive" ]]; then
+        Say info "State: archived"
+    else
+        Say info "State: disabled"
+    fi
+    Say info "Compose: rewrite name paths and ${#env_rename[@]} env ref(s)"
+    if [[ ${#env_rename[@]} -gt 0 ]]; then
+        Say info "Env keys to rename:"
+        for line in "${env_rename[@]}"; do
+            printf "    %s → %s\n" "${line%%|*}" "${line#*|}"
+        done
+    fi
+    if [[ ${#env_skip[@]} -gt 0 ]]; then
+        Say warn "Env keys left unchanged: ${env_skip[*]}"
+        Say info "dc where KEY"
+    fi
+    if [[ ${#skipped[@]} -gt 0 ]]; then
+        Say warn "Outside mounts stay as written:"
+        printf '    %s\n' "${skipped[@]}"
+    fi
+    answer="$(Ask "Rename $old to $new? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left $old unchanged."
+        return 0
+    fi
+
+    if [[ "$enabled" -eq 1 && "$loc" == "apps" ]]; then
+        run_state="$(printf '%s' "$(ReturnStatus "$old")" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$run_state" == *running* || "$run_state" == *restarting* || "$run_state" == *paused* ]]; then
+            Say warn "Stopping $old."
+            RunOneCompose "$compose_file" down || {
+                Say bad "Could not stop $old."
+                exit 1
+            }
+        fi
+        if [[ -f "$src/$COMPOSE_FILE" ]]; then
+            mv -- "$src/$COMPOSE_FILE" "$src/$COMPOSE_FILE_DISABLED" || {
+                Say bad "Could not disable $old before rename."
+                exit 1
+            }
+            compose_file="$src/$COMPOSE_FILE_DISABLED"
+            Say warn "Disabled $old."
+        fi
+    fi
+
+    if ! mv -- "$src" "$dest"; then
+        Say bad "Could not move folder to $new."
+        exit 1
+    fi
+    compose_file="$(ServiceComposeFile "$dest")" || {
+        Say bad "Renamed folder but compose file is missing."
+        exit 1
+    }
+
+    RewriteComposeServiceName "$compose_file" "$old" "$new"
+    for line in "${env_rename[@]}"; do
+        key="${line%%|*}"
+        new_key="${line#*|}"
+        rewrite_pairs+=("${key}=${new_key}")
+    done
+    if [[ ${#rewrite_pairs[@]} -gt 0 ]]; then
+        RewriteComposeEnvKeys "$compose_file" "${rewrite_pairs[@]}"
+        if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+            for line in "${env_rename[@]}"; do
+                key="${line%%|*}"
+                new_key="${line#*|}"
+                RewriteEnvKeyInFile "$envFile" "$key" "$new_key"
+            done
+        fi
+        while IFS= read -r ef; do
+            [[ -n "$ef" ]] || continue
+            for line in "${env_rename[@]}"; do
+                key="${line%%|*}"
+                new_key="${line#*|}"
+                RewriteEnvKeyInFile "$ef" "$key" "$new_key"
+            done
+        done < <(ServiceEnvFiles "$compose_file")
+    fi
+
+    Say ok "Renamed $old → $new."
+    if [[ "$loc" == "archive" ]]; then
+        Say info "Still archived. dc unarchive $new"
+    else
+        Say info "Disabled. dc enable $new"
+        Say info "dc up $new"
     fi
 }
 

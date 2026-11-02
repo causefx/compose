@@ -329,6 +329,26 @@ Remove a service. Asks before deleting the folder (double confirm). Stops/remove
 dc remove plex
 ```
 
+### rename
+
+Rename a service folder (under `APPS` or `ARCHIVE`) and safely rewrite related names.
+
+```bash
+dc rename pihole dns
+```
+
+Flow:
+
+1. Resolve the current folder (apps or archived); refuse if the new name already exists  
+2. Plan compose rewrites (`name` / `container_name` / `hostname`, `${APPS}/old` paths)  
+3. Plan env key renames for the `OLDNAME_` → `NEWNAME_` prefix (hyphens become underscores, e.g. `paperless-ngx` → `PAPERLESS_NGX_`)  
+4. For each candidate env key, skip rename if another service references or defines it (same scan idea as `where`); list those keys  
+5. Warn about outside bind mounts that still point at absolute paths  
+6. Confirm; if enabled and running, `down` and leave the compose file **disabled**  
+7. `mv` the folder; apply compose and env rewrites (project `.env` + service env files)
+
+Ends disabled (or still archived). Then `dc enable` / `dc up`, or `dc unarchive` when archived.
+
 ### edit
 
 Open the service compose file in an editor (nano preferred, then vim). Works when stdin is not a TTY by attaching to `/dev/tty` when available. Edits the enabled file, or the disabled file if that is what exists.
