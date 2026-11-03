@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.11.1 unused shows a spinner while scanning
 ### 1.11.0 unused asks before removing unused keys
 ### 1.10.0 unused lists env keys no service references
 ### 1.9.0 cmd prints docker compose up with env files

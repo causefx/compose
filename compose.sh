@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.11.0
-### ChangeNotes: unused asks before removing unused keys.
+VERSION=v1.11.1
+### ChangeNotes: unused shows a spinner while scanning.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -2941,11 +2941,23 @@ VarReferencedByAnyService() {
 
 Unused() {
     local dir f key name source width answer removed=0
+    local spin='|/-\' tick=0
     local -A def_from=()
     local -A def_files=()
     local -a unused_keys=()
 
     Banner "unused"
+
+    UnusedSpin() {
+        local msg="$1"
+        [[ -t 2 ]] || return 0
+        tick=$(( (tick + 1) % 4 ))
+        printf '\r\033[K  %b%s%b  %s' "$c_teal" "${spin:tick:1}" "$c_reset" "$msg" >&2
+    }
+    UnusedSpinClear() {
+        [[ -t 2 ]] || return 0
+        printf '\r\033[K' >&2
+    }
 
     AddUnusedDef() {
         local k="$1" src="$2" file="$3"
@@ -2965,6 +2977,7 @@ Unused() {
         fi
     }
 
+    UnusedSpin "Reading env files"
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
         while IFS= read -r key; do
             [[ -n "$key" ]] || continue
@@ -2974,6 +2987,7 @@ Unused() {
     while IFS= read -r dir; do
         [[ -n "$dir" ]] || continue
         name="$(basename "$dir")"
+        UnusedSpin "Reading $name"
         while IFS= read -r f; do
             [[ -n "$f" ]] || continue
             while IFS= read -r key; do
@@ -2984,9 +2998,11 @@ Unused() {
     done < <(ServiceDirs)
 
     for key in "${!def_from[@]}"; do
+        UnusedSpin "Checking $key"
         VarReferencedByAnyService "$key" && continue
         unused_keys+=("$key")
     done
+    UnusedSpinClear
 
     if [[ ${#unused_keys[@]} -eq 0 ]]; then
         Say info "No unused env vars."
