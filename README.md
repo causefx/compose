@@ -4,7 +4,7 @@ Personal docker compose management. The short command is `dc`.
 
 ## Documentation
 
-- **[DOCS.md](DOCS.md)** — full command reference (`dc docs`, `dc docs pull`)
+- **[DOCS.md](DOCS.md)** — full command reference (`dc docs`, `dc docs images`)
 - **[CHANGELOG.md](CHANGELOG.md)** — version history
 
 ## Setup
@@ -18,7 +18,7 @@ Personal docker compose management. The short command is `dc`.
 3. Add the `dc` command to your shell:
 
 ```bash
-/home/docker/docker/compose.sh -a bashrc
+/home/docker/docker/compose.sh -a setup
 ```
 
 That checks `~/.bashrc` for `source /home/docker/docker/dc.bash` and asks before adding it. Enter means no.
@@ -37,14 +37,14 @@ dc docs
 ### Updates
 
 ```bash
-dc version
 dc update
-dc repull
+dc update --check
+dc update --force
 ```
 
-`dc version` asks before installing a newer release. `dc update` downloads when the published version differs. `dc repull` downloads again even when the version already matches.
+`dc update` shows the version and asks before installing a newer release (scheduled runs install without asking). `--check` only reports whether a newer release exists. `--force` downloads again even when the version already matches.
 
-Without git, those commands refresh `compose.sh`, `dc.bash`, `README.md`, `DOCS.md`, `CHANGELOG.md`, `docker-compose.yml`, `.env.example`, `.gitignore`, and `LICENSE`. Your `.env` is never overwritten. On a git checkout of this repo, they pull the remote instead. Open a new shell afterward so the helper reloads.
+Without git, update refreshes `compose.sh`, `dc.bash`, `README.md`, `DOCS.md`, `CHANGELOG.md`, `docker-compose.yml`, `.env.example`, `.gitignore`, and `LICENSE`. Your `.env` is never overwritten. On a git checkout of this repo, it pulls the remote instead. Open a new shell afterward so the helper reloads.
 
 ## Service stub
 

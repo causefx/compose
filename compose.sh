@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.11.5
-### ChangeNotes: table-driven dispatch, shared helpers, and pipefail.
+VERSION=v2.0.0
+### ChangeNotes: update, tidy --undo, images --pull, host, and setup replace old actions.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -104,68 +104,67 @@ ColumnWidth() {
 }
 
 # Add an action here. Help, dispatch, scheduling, and dc.bash read this list.
-# name|flags|function|function args|description
+# name|flags|function|function args|options|description
 # flags: s = next dc word is the service name
 #        j = can be scheduled (dc schedule add)
 #        d = probe for docker compose before running
+#        h = hidden from help, completion, and schedule add
+# options: words the action accepts after its name or service; drive help,
+#          dc tab completion, and which options a schedule may pass.
 ActionSpec() {
     cat <<'EOF'
 # @actions
 # @group Run
-up|sd|RunCompose|up -d|Create and start containers
-down|sd|RunCompose|down|Stop and remove containers, networks
-start|sd|RunCompose|start|Start service(s)
-stop|sd|RunCompose|stop|Stop service(s)
-restart|sd|RunCompose|restart|Restart service container(s)
-build|sd|RunCompose|build|Build service image(s)
-pause|sd|RunCompose|pause|Pause service(s)
-unpause|sd|RunCompose|unpause|Unpause service(s)
-exec|sd|Exec||Run a command in a service
-cp|sd|Cp||Copy files to or from a service
+up|sd|RunCompose|up -d||Create and start containers
+down|sd|RunCompose|down||Stop and remove containers, networks
+start|sd|RunCompose|start||Start service(s)
+stop|sd|RunCompose|stop||Stop service(s)
+restart|sd|RunCompose|restart||Restart service container(s)
+build|sd|RunCompose|build||Build service image(s)
+pause|sd|RunCompose|pause||Pause service(s)
+unpause|sd|RunCompose|unpause||Unpause service(s)
+exec|sd|Exec|||Run a command in a service
+cp|sd|Cp|||Copy files to or from a service
 # @group Check
-list|sjd|List||List services and env files
-ps|sjd|Ps||Show container(s)
-issue|sjd|Issue||Show containers that need attention
-logs|sd|Logs||Show service logs
-top|sd|RunCompose|top|Show processes in a container
-stats|sd|Stats||Show CPU, memory, and network
-images|sjd|ShowImages|list|List compose images and tags
-pull|sjd|ShowImages|pull|Pull images and skip ones already current
-config|sd|RunCompose|config|Render compose file(s)
-cmd|sd|Cmd||Print docker compose up with env files
-ports|sj|CheckPorts||Show ports from all env files
-nextport|j|NextPort||Show the next free host port
-df|j|Disk||Show Docker disk usage
-prune||Prune||Remove unused Docker data
+list|sjd|List|||List services and env files
+ps|sjd|Ps|||Show container(s)
+issue|sjd|Issue|||Show containers that need attention
+logs|sd|Logs|||Show service logs
+top|sd|RunCompose|top||Show processes in a container
+stats|sd|Stats|||Show CPU, memory, and network
+images|sjd|ShowImages|list|--pull|List compose images; --pull pulls updates
+config|sd|RunCompose|config||Render compose file(s)
+cmd|sd|Cmd|||Print docker compose up with env files
+ports|sj|CheckPorts|||Show ports from all env files
+nextport|j|NextPort|||Show the next free host port
+df|j|Disk|||Show Docker disk usage
+prune||Prune|||Remove unused Docker data
 # @group Services
-enable|sd|Toggle|enable|Enable service(s)
-disable|sd|Toggle|disable|Disable service(s)
-archive|sd|Archive||Archive disabled service(s)
-unarchive|sd|Unarchive||Restore archived service(s)
-create|s|Create||Create service
-add|sd|Add||Add an app to a service compose file
-remove|sd|Remove||Remove service
-rename|sd|Rename||Rename a service folder and env keys
-move|sd|Move||Move a service to another host
-receive|s|Receive||Receive a service from another host
-edit|s|EditFile||Edit service
-env|s|EditEnv||Edit project or service env file
-envs|s|Envs||List or fill env vars for a service
-where||Where||Show where an env var is used
-unused||Unused||List unused env vars and ask to remove
-tidy|j|TidyEnv||Organize the env file and sort ports
-restore||RestoreEnv||Restore .env from the tidy backup
+enable|sd|Toggle|enable||Enable service(s)
+disable|sd|Toggle|disable||Disable service(s)
+archive|sd|Archive|||Archive disabled service(s)
+unarchive|sd|Unarchive|||Restore archived service(s)
+create|s|Create|||Create service
+add|sd|Add|||Add an app to a service compose file
+remove|sd|Remove|||Remove service
+rename|sd|Rename|||Rename a service folder and env keys
+move|sd|Move|||Move a service to another host
+receive|s|Receive|||Receive a service from another host
+edit|s|EditFile|||Edit service
+env|s|EditEnv|||Edit project or service env file
+envs|s|Envs||values fill|List or fill env vars for a service
+where||Where|||Show where an env var is used
+unused||Unused|||List unused env vars and ask to remove
+tidy|j|TidyEnv||--undo|Organize the env file; --undo restores the backup
 # @group Script
-version|j|ShowVersion||Display version
-update|j|UpdateScript||Update script when a new version exists
-repull||Repull||Re-download repo files
-bashrc||PrintBashrc||Add the dc.bash source line to ~/.bashrc
-key||Key||Create an SSH key and install it on a host
-hosts|j|Hosts||List hosts ready for moving services
-path||Path||Print script and APPS paths
-schedule||Schedule||Manage scheduled compose actions
-docs||Docs||Show command documentation
-help||Help||This help menu
+update|j|UpdateScript||--check --force|Check for and install a newer version
+host|j|Host||add list|Add a host for move, or list saved hosts
+setup||Setup||bashrc|Add the dc.bash source line to ~/.bashrc
+schedule||Schedule||list add remove|Manage scheduled compose actions
+docs||Docs|||Show command documentation
+help||Help|||This help menu
+path|h|Path|||Print script and APPS paths
+version|h|UpdateScript|--check||Display version
 # @end
 EOF
 }
@@ -178,13 +177,13 @@ EachAction() {
     done < <(ActionSpec)
 }
 
-# Sets ACT_FLAGS, ACT_FN, ACT_ARGS, ACT_DESC for action $1. Exit 1 if unknown.
+# Sets ACT_FLAGS, ACT_FN, ACT_ARGS, ACT_OPTS, ACT_DESC for action $1. Exit 1 if unknown.
 ActionLookup() {
-    local name flags fn args desc
-    ACT_FLAGS="" ACT_FN="" ACT_ARGS="" ACT_DESC=""
-    while IFS='|' read -r name flags fn args desc; do
+    local name flags fn args opts desc
+    ACT_FLAGS="" ACT_FN="" ACT_ARGS="" ACT_OPTS="" ACT_DESC=""
+    while IFS='|' read -r name flags fn args opts desc; do
         [[ "$name" == "$1" ]] || continue
-        ACT_FLAGS="$flags" ACT_FN="$fn" ACT_ARGS="$args" ACT_DESC="$desc"
+        ACT_FLAGS="$flags" ACT_FN="$fn" ACT_ARGS="$args" ACT_OPTS="$opts" ACT_DESC="$desc"
         return 0
     done < <(EachAction)
     return 1
@@ -196,26 +195,33 @@ ActionHasFlag() {
     [[ "$ACT_FLAGS" == *"$2"* ]]
 }
 
-# Prints the names of actions whose flags contain $1, space separated.
+# ActionHasOption <action> <word>: word is in the action's options column.
+ActionHasOption() {
+    ActionLookup "$1" || return 1
+    [[ -n "$2" && " $ACT_OPTS " == *" $2 "* ]]
+}
+
+# Prints the names of visible actions whose flags contain $1, space separated.
 ActionsWithFlag() {
     local name flags out=""
     while IFS='|' read -r name flags _; do
+        [[ "$flags" == *h* ]] && continue
         [[ "$flags" == *"$1"* ]] && out+="$name "
     done < <(EachAction)
     printf '%s' "${out% }"
 }
 
 Help() {
-    local line name flags fn args desc group
+    local line name flags fn args opts desc group shown
     local first=1
     Banner "help"
     printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
     printf "  %b-e <file>%b   env file, default %s\n" "$c_dim" "$c_reset" "$SCRIPT_WORKING_DIR/.env"
     printf "  %bexample%b     compose.sh -a logs -s plex -- --tail 100\n" "$c_dim" "$c_reset"
     printf "  %bexample%b     compose.sh -a move -s plex -- root@other-host\n" "$c_dim" "$c_reset"
-    printf "  %bexample%b     compose.sh -a key -- root@other-host\n" "$c_dim" "$c_reset"
-    printf "  %bexample%b     compose.sh -a schedule -- add pull 0 4 '*' '*' '*'\n" "$c_dim" "$c_reset"
-    printf "  %bexample%b     compose.sh -a docs -- pull\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a host -- add root@other-host\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a schedule -- add images --pull 0 4 '*' '*' '*'\n" "$c_dim" "$c_reset"
+    printf "  %bexample%b     compose.sh -a docs -- images\n" "$c_dim" "$c_reset"
     Banner "actions"
     while IFS= read -r line; do
         if [[ "$line" == "# @group "* ]]; then
@@ -226,8 +232,11 @@ Help() {
             continue
         fi
         [[ -z "$line" || "$line" == \#* ]] && continue
-        IFS='|' read -r name flags fn args desc <<< "$line"
-        printf "  %b%-10s%b  %s\n" "$c_teal" "$name" "$c_reset" "$desc"
+        IFS='|' read -r name flags fn args opts desc <<< "$line"
+        [[ "$flags" == *h* ]] && continue
+        shown=""
+        [[ -n "$opts" ]] && shown="  [${opts// /|}]"
+        printf "  %b%-10s%b  %s%b%s%b\n" "$c_teal" "$name" "$c_reset" "$desc" "$c_dim" "$shown" "$c_reset"
     done < <(ActionSpec)
 }
 
@@ -411,6 +420,11 @@ CheckAction() {
         Say bad "Unknown handler: $ACT_FN"
         exit 1
     fi
+    # Older dc.bash passed the first word as -s for actions that take none.
+    if [[ "$ACT_FLAGS" != *s* && -n "${folder:-}" && " $ACT_OPTS " == *" $folder "* ]]; then
+        EXTRA_ARGS=("$folder" "${EXTRA_ARGS[@]}")
+        folder=""
+    fi
     # shellcheck disable=SC2086
     "$ACT_FN" $ACT_ARGS
     return 0
@@ -421,20 +435,40 @@ RunCompose() {
     RunServices "$folder" "$@" "${EXTRA_ARGS[@]}"
 }
 
-ShowVersion() {
-    Banner "version"
-    Say ok "$VERSION"
-    CheckVersion ask
-}
-
+# UpdateScript [--check|--force]: options also come from EXTRA_ARGS.
 UpdateScript() {
+    local arg mode=""
+    for arg in "$@" "${EXTRA_ARGS[@]}"; do
+        case "$arg" in
+            --check|--force)
+                if [[ -n "$mode" && "$mode" != "$arg" ]]; then
+                    Say bad "Use --check or --force, not both."
+                    exit 1
+                fi
+                mode="$arg"
+                ;;
+            *)
+                Say bad "Update takes --check or --force."
+                Say info "dc update"
+                Say info "dc update --check"
+                Say info "dc update --force"
+                exit 1
+                ;;
+        esac
+    done
     Banner "update"
-    CheckVersion apply
-}
-
-Repull() {
-    Banner "repull"
-    Update
+    Say ok "$VERSION"
+    case "$mode" in
+        --check) CheckVersion check ;;
+        --force) Update ;;
+        *)
+            if NonInteractive; then
+                CheckVersion apply
+            else
+                CheckVersion ask
+            fi
+            ;;
+    esac
 }
 
 # Exit 0 when $1 is a higher vMAJOR.MINOR.PATCH than $2.
@@ -476,18 +510,22 @@ CheckVersion() {
     fi
 
     if [[ "$VERSION" == "$LATEST_RELEASE" ]] || ! VersionIsNewer "$LATEST_RELEASE" "$VERSION"; then
-        if [[ "$mode" == "apply" ]]; then
-            Say ok "Already up to date."
-        fi
+        Say ok "Already up to date."
         return 0
     fi
 
     Say warn "New version available: $VERSION → $LATEST_RELEASE"
     [[ -n "$LATEST_CHANGES" ]] && Say info "Change notes: $LATEST_CHANGES"
-    if [[ "$mode" == "apply" ]]; then
-        Update
-        return
-    fi
+    case "$mode" in
+        apply)
+            Update
+            return
+            ;;
+        check)
+            Say info "dc update"
+            return 0
+            ;;
+    esac
     answer="$(Ask "Would you like to update? [y/N]")"
     [[ "$answer" =~ ^[yY] ]] && Update
 }
@@ -506,7 +544,7 @@ DownloadFile() {
 }
 
 RelaunchUpdated() {
-  local -a args=("-a" "version")
+  local -a args=("-a" "update")
   local i n
   n=${#SCRIPT_ARGS[@]}
   i=0
@@ -516,6 +554,7 @@ RelaunchUpdated() {
     fi
     i=$((i + 1))
   done
+  args+=("--" "--check")
   exec "$SCRIPT_PATH" "${args[@]}"
   exit 1
 }
@@ -3292,7 +3331,7 @@ Hosts() {
     local -a names=() targets=()
     local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=5 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
 
-    Banner "hosts"
+    Banner "host list"
     if [[ -z "${HOME:-}" ]]; then
         Say bad "HOME is not set."
         exit 1
@@ -3308,7 +3347,7 @@ Hosts() {
     count=${#names[@]}
     if [[ "$count" -eq 0 ]]; then
         Say info "No hosts yet."
-        Say info "dc key root@hostname"
+        Say info "dc host add root@hostname"
         return 0
     fi
     printf "  %b%-*s  %-*s  %s%b\n" "$c_dim" "$name_w" "host" "$full_w" "connects as" "move" "$c_reset"
@@ -4226,6 +4265,16 @@ TidyEnv() {
     local -A seen=()
     local -A cat_seen=()
 
+    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+        if [[ ${#EXTRA_ARGS[@]} -eq 1 && "${EXTRA_ARGS[0]}" == "--undo" ]]; then
+            RestoreEnv
+            return
+        fi
+        Say bad "Tidy takes an optional --undo."
+        Say info "dc tidy"
+        Say info "dc tidy --undo"
+        exit 1
+    fi
     Banner "tidy"
     if [[ ! -f "$envFile" ]]; then
         Say bad "Env file does not exist: $envFile"
@@ -4379,7 +4428,7 @@ TidyEnv() {
 RestoreEnv() {
     local bak answer
 
-    Banner "restore"
+    Banner "tidy undo"
     bak="$(ResolveBackupPath "$envFile" || true)"
     if [[ ! -f "$bak" ]]; then
         Say bad "No tidy backup found."
@@ -4979,12 +5028,32 @@ ShowImages() {
     local dir path path_lc state file img tag row_key
     local -a disp_path=() disp_state=() disp_tag=() disp_img=()
     local tag_width i
-    local answer img_ref include_disabled=0 pull_enabled=0
+    local answer img_ref include_disabled=0 pull_enabled=0 arg title
 
+    for arg in "${EXTRA_ARGS[@]}"; do
+        case "$arg" in
+            --pull) mode="pull" ;;
+            -*)
+                Say bad "Images takes an optional service and --pull."
+                Say info "dc images plex"
+                Say info "dc images plex --pull"
+                exit 1
+                ;;
+            *)
+                if [[ -n "${folder:-}" ]]; then
+                    Say bad "Images takes one service."
+                    exit 1
+                fi
+                folder="${arg,,}"
+                ;;
+        esac
+    done
+    title="images"
+    [[ "$mode" == "pull" ]] && title="images pull"
     if [ -n "$folder" ] && [ "$folder" != "all" ]; then
-        Banner "images $folder"
+        Banner "$title $folder"
     else
-        Banner "images"
+        Banner "$title"
     fi
 
     while IFS= read -r dir; do
@@ -5229,7 +5298,7 @@ ShowImages() {
 
 Key() {
     local ssh_dir priv="" pub host name comment created=0 shown import_cmd copy_cmd quoted answer
-    Banner "key"
+    Banner "host add"
     if [[ -z "${HOME:-}" ]]; then
         Say bad "HOME is not set."
         exit 1
@@ -5239,9 +5308,9 @@ Key() {
         host="$folder"
     fi
     if [[ ${#EXTRA_ARGS[@]} -gt 1 ]] || { [[ -n "$host" ]] && ! MoveHostOk "$host"; }; then
-        Say bad "Key takes an optional host."
-        Say info "dc key"
-        Say info "dc key root@other-host"
+        Say bad "Host add takes an optional host."
+        Say info "dc host add"
+        Say info "dc host add root@other-host"
         exit 1
     fi
     if [[ -n "$host" ]]; then
@@ -5340,6 +5409,41 @@ Key() {
     Say ok "$host accepts this key. dc move can connect."
 }
 
+# Host add [user@host] | Host list
+Host() {
+    local sub="${EXTRA_ARGS[0]:-list}"
+    case "$sub" in
+        add)
+            EXTRA_ARGS=("${EXTRA_ARGS[@]:1}")
+            Key
+            ;;
+        list)
+            if [[ ${#EXTRA_ARGS[@]} -gt 1 ]]; then
+                Say bad "Host list takes no arguments."
+                exit 1
+            fi
+            Hosts
+            ;;
+        *)
+            Say bad "Use host add or host list."
+            Say info "dc host add root@other-host"
+            Say info "dc host list"
+            exit 1
+            ;;
+    esac
+}
+
+Setup() {
+    case "${EXTRA_ARGS[0]:-bashrc}" in
+        bashrc) PrintBashrc ;;
+        *)
+            Say bad "Use setup or setup bashrc."
+            Say info "dc setup"
+            exit 1
+            ;;
+    esac
+}
+
 BashrcSourceLine() {
     printf 'source %q\n' "$SCRIPT_WORKING_DIR/dc.bash"
 }
@@ -5372,11 +5476,35 @@ BashrcHasSource() {
 }
 
 ScheduleAllowed() {
-    [[ -n "$1" ]] && ActionHasFlag "$1" j
+    [[ -n "$1" ]] && ActionHasFlag "$1" j && [[ "$ACT_FLAGS" != *h* ]]
 }
 
+# ScheduleMarker <action> [options...]
 ScheduleMarker() {
-    printf 'compose-schedule:%s' "$1"
+    local IFS=' '
+    printf 'compose-schedule:%s' "$*"
+}
+
+# Sets SCHED_ACTION and SCHED_OPTS from a managed crontab line. Exit 1 otherwise.
+ScheduleParseLine() {
+    local tail
+    SCHED_ACTION="" SCHED_OPTS=""
+    [[ "$1" == *" # compose-schedule:"* ]] || return 1
+    tail="${1##* # compose-schedule:}"
+    tail="${tail%"${tail##*[![:space:]]}"}"
+    SCHED_ACTION="${tail%% *}"
+    [[ "$tail" == *" "* ]] && SCHED_OPTS="${tail#* }"
+    [[ -n "$SCHED_ACTION" ]]
+}
+
+# Old scheduled action name → "new_action option". Exit 1 when not renamed.
+ScheduleRenamed() {
+    case "$1" in
+        pull) printf 'images --pull' ;;
+        hosts) printf 'host list' ;;
+        version) printf 'update --check' ;;
+        *) return 1 ;;
+    esac
 }
 
 ScheduleLogFile() {
@@ -5414,28 +5542,108 @@ WriteCrontab() {
     return "$status"
 }
 
+# ScheduleLine <action> <option count> [options...] <five cron fields>
 ScheduleLine() {
-    local action="$1"
-    shift
+    local action="$1" nopts="$2"
+    shift 2
+    local -a opts=("${@:1:$nopts}")
+    shift "$nopts"
     local expr="$*"
-    local bash_bin log marker
+    local bash_bin log marker opt opt_part=""
     bash_bin="$(command -v bash)"
     [[ -n "$bash_bin" ]] || bash_bin="/bin/bash"
     log="$(ScheduleLogFile "$action")"
-    marker="$(ScheduleMarker "$action")"
-    printf '%s cd %s && COMPOSE_NONINTERACTIVE=1 %s %s -e %s -a %s >>%s 2>&1 # %s\n' \
+    marker="$(ScheduleMarker "$action" "${opts[@]}")"
+    if [[ ${#opts[@]} -gt 0 ]]; then
+        opt_part=" --"
+        for opt in "${opts[@]}"; do
+            opt_part+=" $(CronQuote "$opt")"
+        done
+    fi
+    printf '%s cd %s && COMPOSE_NONINTERACTIVE=1 %s %s -e %s -a %s%s >>%s 2>&1 # %s\n' \
         "$expr" \
         "$(CronQuote "$SCRIPT_WORKING_DIR")" \
         "$(CronQuote "$bash_bin")" \
         "$(CronQuote "$SCRIPT_PATH")" \
         "$(CronQuote "$envFile")" \
         "$(CronQuote "$action")" \
+        "$opt_part" \
         "$(CronQuote "$log")" \
         "$marker"
 }
 
+# Rewrites one old-name crontab line to its new action. Prints the new line.
+ScheduleRewriteLine() {
+    local line="$1" old="$2" new_action="$3" new_opt="$4" out
+    out="${line/" -a $(CronQuote "$old") "/" -a $(CronQuote "$new_action") -- $(CronQuote "$new_opt") "}"
+    [[ "$out" != "$line" ]] || return 1
+    out="${out/"/schedule-$old.log"/"/schedule-$new_action.log"}"
+    out="${out% # compose-schedule:*} # $(ScheduleMarker "$new_action" "$new_opt")"
+    printf '%s\n' "$out"
+}
+
+# Offers to rewrite crontab lines that still use renamed actions.
+ScheduleMigrate() {
+    local line renamed new_action new_opt answer changed=0 new_line
+    local -a lines=() stale=() targets=()
+    local -A taken=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lines+=("$line")
+        ScheduleParseLine "$line" && taken["$SCHED_ACTION"]=1
+    done < <(ReadCrontab)
+    for line in "${lines[@]}"; do
+        ScheduleParseLine "$line" || continue
+        ScheduleAllowed "$SCHED_ACTION" && continue
+        if renamed="$(ScheduleRenamed "$SCHED_ACTION")"; then
+            new_action="${renamed%% *}"
+            if [[ -n "${taken[$new_action]+x}" ]]; then
+                Say warn "$SCHED_ACTION is now $renamed, and $new_action is already scheduled."
+                Say info "dc schedule remove $SCHED_ACTION"
+                continue
+            fi
+            stale+=("$SCHED_ACTION")
+            targets+=("$renamed")
+            Say warn "$SCHED_ACTION is now $renamed."
+        else
+            Say warn "$SCHED_ACTION is no longer an action."
+            Say info "dc schedule remove $SCHED_ACTION"
+        fi
+    done
+    [[ ${#stale[@]} -gt 0 ]] || return 0
+    answer="$(Ask "Rewrite ${#stale[@]} old schedule(s) to the new names? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left crontab unchanged."
+        return 0
+    fi
+    local -a out=()
+    local i
+    for line in "${lines[@]}"; do
+        if ScheduleParseLine "$line"; then
+            for i in "${!stale[@]}"; do
+                [[ "$SCHED_ACTION" == "${stale[$i]}" ]] || continue
+                new_action="${targets[$i]%% *}"
+                new_opt="${targets[$i]#* }"
+                if new_line="$(ScheduleRewriteLine "$line" "${stale[$i]}" "$new_action" "$new_opt")"; then
+                    line="$new_line"
+                    changed=$((changed + 1))
+                else
+                    Say warn "Could not rewrite the ${stale[$i]} line. Remove it and add it again."
+                fi
+                break
+            done
+        fi
+        out+=("$line")
+    done
+    [[ "$changed" -gt 0 ]] || return 0
+    if ! printf '%s\n' "${out[@]}" | WriteCrontab; then
+        Say bad "Could not update crontab."
+        exit 1
+    fi
+    Say ok "Rewrote $changed schedule(s)."
+}
+
 ScheduleList() {
-    local line action expr count=0
+    local line expr count=0 label
     local -a lines=()
     while IFS= read -r line; do
         [[ "$line" == *" # compose-schedule:"* ]] || continue
@@ -5443,55 +5651,91 @@ ScheduleList() {
     done < <(ReadCrontab)
     if [[ ${#lines[@]} -eq 0 ]]; then
         Say info "No scheduled actions."
-        Say info "dc schedule add pull 0 4 '*' '*' '*'"
+        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
         return 0
     fi
+    ScheduleMigrate
+    lines=()
+    while IFS= read -r line; do
+        [[ "$line" == *" # compose-schedule:"* ]] || continue
+        lines+=("$line")
+    done < <(ReadCrontab)
     for line in "${lines[@]}"; do
-        action="${line##* # compose-schedule:}"
-        action="${action%%[[:space:]]*}"
+        ScheduleParseLine "$line" || continue
+        label="$SCHED_ACTION"
+        [[ -n "$SCHED_OPTS" ]] && label+=" $SCHED_OPTS"
         expr="${line%% cd *}"
         expr="${expr%"${expr##*[![:space:]]}"}"
-        printf "  %b✔%b  %b%-10s%b  %s\n" "$c_green" "$c_reset" "$c_teal" "$action" "$c_reset" "$expr"
-        Say info "log $(ScheduleLogFile "$action")"
+        if ScheduleAllowed "$SCHED_ACTION"; then
+            printf "  %b✔%b  %b%-16s%b  %s\n" "$c_green" "$c_reset" "$c_teal" "$label" "$c_reset" "$expr"
+        else
+            printf "  %b✘%b  %b%-16s%b  %s\n" "$c_red" "$c_reset" "$c_teal" "$label" "$c_reset" "$expr"
+        fi
+        Say info "log $(ScheduleLogFile "$SCHED_ACTION")"
         count=$((count + 1))
     done
     Say ok "$count scheduled action(s)."
 }
 
+# ScheduleAdd <action> [options...] <m> <h> <dom> <mon> <dow>
 ScheduleAdd() {
-    local action="$1"
-    shift
-    local expr line marker answer existing=0
-    local -a keep=() fields=("$@")
+    local action="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    local expr line answer existing=0 opt label nopts renamed
+    local -a keep=() opts=() fields=()
 
     if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
         Say bad "Schedule needs an allowed action."
+        if renamed="$(ScheduleRenamed "$action")"; then
+            Say info "$action is now $renamed."
+        fi
         Say info "$(ActionsWithFlag j)"
-        Say info "dc schedule add pull 0 4 '*' '*' '*'"
+        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
         exit 1
     fi
+    if [[ $# -lt 5 ]]; then
+        Say bad "Cron needs five fields. Quote the stars so the shell keeps them."
+        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
+        exit 1
+    fi
+    nopts=$(( $# - 5 ))
+    opts=("${@:1:$nopts}")
+    fields=("${@:$((nopts + 1))}")
+    for opt in "${opts[@]}"; do
+        if ! ActionHasOption "$action" "$opt"; then
+            ActionLookup "$action"
+            Say bad "$action does not take $opt."
+            if [[ -n "$ACT_OPTS" ]]; then
+                Say info "$action takes: $ACT_OPTS"
+            else
+                Say info "$action takes no options."
+            fi
+            exit 1
+        fi
+    done
     if ! ScheduleCronExprOk "${fields[@]}"; then
         Say bad "Cron needs five fields. Quote the stars so the shell keeps them."
-        Say info "dc schedule add pull 0 4 '*' '*' '*'"
+        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
         exit 1
     fi
     expr="${fields[*]}"
-    marker="$(ScheduleMarker "$action")"
+    label="$action"
+    [[ ${#opts[@]} -gt 0 ]] && label+=" ${opts[*]}"
     while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == *" # $marker" ]]; then
+        if ScheduleParseLine "$line" && [[ "$SCHED_ACTION" == "$action" ]]; then
             existing=1
             continue
         fi
         keep+=("$line")
     done < <(ReadCrontab)
     if [[ "$existing" -eq 1 ]]; then
-        answer="$(Ask "Replace schedule for $action? [y/N]")"
+        answer="$(Ask "Replace schedule for $action with $label at '$expr'? [y/N]")"
         if [[ "$answer" != [yY] ]]; then
             Say info "Left crontab unchanged."
             return 0
         fi
     else
-        answer="$(Ask "Schedule $action at '$expr'? [y/N]")"
+        answer="$(Ask "Schedule $label at '$expr'? [y/N]")"
         if [[ "$answer" != [yY] ]]; then
             Say info "Left crontab unchanged."
             return 0
@@ -5501,27 +5745,26 @@ ScheduleAdd() {
         Say bad "Could not create $SCRIPT_WORKING_DIR/logs."
         exit 1
     }
-    keep+=("$(ScheduleLine "$action" "${fields[@]}")")
+    keep+=("$(ScheduleLine "$action" "$nopts" "${opts[@]}" "${fields[@]}")")
     if ! printf '%s\n' "${keep[@]}" | WriteCrontab; then
         Say bad "Could not update crontab."
         exit 1
     fi
-    Say ok "Scheduled $action: $expr"
+    Say ok "Scheduled $label: $expr"
     Say info "log $(ScheduleLogFile "$action")"
 }
 
 ScheduleRemove() {
-    local action="$1" line marker found=0 answer
+    local action="$1" line found=0 answer
     local -a keep=()
 
-    if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
+    if [[ ! "$action" =~ ^[a-z0-9-]+$ ]]; then
         Say bad "Remove needs a scheduled action name."
-        Say info "dc schedule remove pull"
+        Say info "dc schedule remove images"
         exit 1
     fi
-    marker="$(ScheduleMarker "$action")"
     while IFS= read -r line; do
-        if [[ "$line" == *" # $marker" ]]; then
+        if ScheduleParseLine "$line" && [[ "$SCHED_ACTION" == "$action" ]]; then
             found=1
             continue
         fi
@@ -5558,14 +5801,6 @@ Schedule() {
         Say bad "crontab is required."
         exit 1
     fi
-    # Older dc.bash treated "add" as -s. Put it back on EXTRA_ARGS.
-    if [[ -n "${folder:-}" && "$folder" != "all" ]]; then
-        case "$folder" in
-            list|add|remove|rm)
-                EXTRA_ARGS=("$folder" "${EXTRA_ARGS[@]}")
-                ;;
-        esac
-    fi
     sub="${EXTRA_ARGS[0]:-list}"
     case "$sub" in
         list|"")
@@ -5577,7 +5812,7 @@ Schedule() {
         remove|rm)
             if [[ ${#EXTRA_ARGS[@]} -ne 2 ]]; then
                 Say bad "Remove needs one action."
-                Say info "dc schedule remove pull"
+                Say info "dc schedule remove images"
                 exit 1
             fi
             ScheduleRemove "${EXTRA_ARGS[1]}"
@@ -5585,8 +5820,8 @@ Schedule() {
         *)
             Say bad "Use list, add, or remove."
             Say info "dc schedule"
-            Say info "dc schedule add pull 0 4 '*' '*' '*'"
-            Say info "dc schedule remove pull"
+            Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
+            Say info "dc schedule remove images"
             exit 1
             ;;
     esac
@@ -5646,7 +5881,7 @@ Docs() {
     if [[ ${#EXTRA_ARGS[@]} -gt 1 ]]; then
         Say bad "Docs takes an optional topic."
         Say info "dc docs"
-        Say info "dc docs pull"
+        Say info "dc docs images"
         exit 1
     fi
 
@@ -5654,12 +5889,12 @@ Docs() {
     file="$(DocsFile)"
     if [[ ! -f "$file" ]]; then
         Say bad "Documentation file not found: $file"
-        Say info "Run dc repull to download DOCS.md."
+        Say info "Run dc update --force to download DOCS.md."
         exit 1
     fi
     if [[ -z "$topic" ]]; then
         Say info "Full reference: $file"
-        Say info "dc docs pull"
+        Say info "dc docs images"
         DocsShowFile "$file"
         return 0
     fi
@@ -5720,8 +5955,12 @@ PrintBashrc() {
 # Do the Things
 action_lc="${action:-}"
 action_lc="${action_lc,,}"
-if [[ "$action_lc" == "bashrc" ]]; then
-    PrintBashrc
+# setup runs before .env exists on a new install.
+if [[ "$action_lc" == "setup" ]]; then
+    if [[ "${folder,,}" == "bashrc" ]]; then
+        EXTRA_ARGS=("bashrc" "${EXTRA_ARGS[@]}")
+    fi
+    Setup
     exit 0
 fi
 CheckEnv;

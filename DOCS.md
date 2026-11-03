@@ -24,12 +24,12 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 - **Archived** — disabled service folder moved under `ARCHIVE` (default `APPS/.archive/`); hidden from normal run/list loops until unarchived
 - **Stub** — `STUB_FILE` template used by `create` (usually the repo `docker-compose.yml`)
 - **Env** — project `.env` next to `compose.sh` (never overwritten by update). Read with a parser, not `source`, so values are never run as shell code. Unquoted and double-quoted values expand `$VAR` / `${VAR}` like Compose; single-quoted values stay literal.
-- **Backups** — tidy and non-git update copies go under `.backup/` next to the file (for example `.backup/.env.bak`, `.backup/compose.sh.bak`). Legacy `*.bak` beside the file still works for `restore`.
+- **Backups** — tidy and non-git update copies go under `.backup/` next to the file (for example `.backup/.env.bak`, `.backup/compose.sh.bak`). Legacy `*.bak` beside the file still works for `tidy --undo`.
 - **Service env files** — any `.env`, `.env.*`, or `*.env` in a service folder is also passed to Compose (after the project `.env`). Later files can override earlier keys. Skips `*.bak`, `*.example`, and `*.sample`.
 
 ### Service name
 
-Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. With no name, `down`, `stop`, and `restart` default to **no** (`[y/N]`); other loops default to yes. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `where`, `unused`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
+Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. With no name, `down`, `stop`, and `restart` default to **no** (`[y/N]`); other loops default to yes. Some commands never take a service: `nextport`, `df`, `prune`, `where`, `unused`, `tidy`, `update`, `host`, `setup`, `schedule`, `docs`, `help`. For those, the next word is an option or subcommand (`dc update --check`, `dc host add root@other-host`).
 
 ### Marks
 
@@ -46,7 +46,7 @@ Status lines use the same marks across the UI:
 
 ### Non-interactive runs
 
-When `COMPOSE_NONINTERACTIVE=1` (set by scheduled cron jobs), prompts are skipped. `pull` then pulls enabled-service images only.
+When `COMPOSE_NONINTERACTIVE=1` (set by scheduled cron jobs), prompts are skipped. `images --pull` then pulls enabled-service images only, and `update` installs a newer version without asking.
 
 ---
 
@@ -208,23 +208,18 @@ List compose images and tags for each service folder. Enabled rows first, then d
 ```bash
 dc images
 dc images plex
+dc images --pull
+dc images plex --pull
 ```
 
-### pull
+With `--pull`, pull images that differ from the registry. Compares local digests to the registry index or platform manifest. Skips images that already match. Lists updates with ↓ marks, then pulls them.
 
-Pull images that differ from the registry. Compares local digests to the registry index or platform manifest. Skips images that already match. Lists updates with ↓ marks, then pulls them.
-
-Interactive prompts:
+Interactive prompts with `--pull`:
 
 - Pull unique images from enabled services? `[Y/n]`
 - Also pull images only used by disabled services? `[y/N]`
 
 Scheduled / non-interactive runs pull **enabled** images only and skip questions.
-
-```bash
-dc pull
-dc pull plex
-```
 
 ### config
 
@@ -421,7 +416,7 @@ Never flagged:
 
 Table columns: **key** and **from** (`shared`, a service name, or both). Sorted by key A–Z. Shows a spinner on the terminal while scanning.
 
-After the table, asks whether to remove those keys (`[y/N]`, default no). On yes, each file it will edit is first copied to `.backup/<name>.bak`; if a backup fails, nothing is removed. `dc restore` puts the project `.env` back from that backup.
+After the table, asks whether to remove those keys (`[y/N]`, default no). On yes, each file it will edit is first copied to `.backup/<name>.bak`; if a backup fails, nothing is removed. `dc tidy --undo` puts the project `.env` back from that backup.
 
 ```bash
 dc unused
@@ -442,15 +437,10 @@ Duplicate keys keep the last value. Saves the previous file as `.backup/.env.bak
 
 ```bash
 dc tidy
+dc tidy --undo
 ```
 
-### restore
-
-Restore `.env` from the tidy backup (`.backup/.env.bak`, or a legacy `.env.bak` beside the file). Asks before replacing.
-
-```bash
-dc restore
-```
+`--undo` restores `.env` from that backup (`.backup/.env.bak`, or a legacy `.env.bak` beside the file). Asks before replacing.
 
 ### move
 
@@ -478,7 +468,7 @@ Flow:
 7. Remote `receive` writes the folder disabled under `APPS`, or under `ARCHIVE` when the source was archived; merges missing project `.env` keys (service env files travel inside the folder)
 8. On APPS sources: disable locally if it was enabled; ask whether to delete the local folder. On archived sources: ask whether to remove from this archive.
 
-Both hosts need a current script (protocol `COMPOSE-MOVE 2`). `dc key root@host` can remember a short name so later moves use `dc move plex host` (tab-completes those names). Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
+Both hosts need a current script (protocol `COMPOSE-MOVE 2`). `dc host add root@host` can remember a short name so later moves use `dc move plex host` (tab-completes those names). Short names live in `~/.ssh/compose-hosts` and a managed block in `~/.ssh/config`.
 
 Does not copy: bind mounts outside the service folder, named volumes, or the image (the other host pulls on start after unarchive/enable).
 
@@ -490,69 +480,9 @@ Internal action used by `move` on the destination. Saves the stdin stream before
 compose.sh -a receive -s plex   # fed by move over SSH
 ```
 
----
-
-## Script
-
-### version
-
-Print the local version. If a higher GitHub version exists, asks whether to install it. A local build ahead of GitHub does not prompt.
-
-Releases use **major.feature.fix**: feature bumps the middle number and resets fix to `0`; fixes bump the last number; breaking changes bump major.
-
-```bash
-dc version
-```
-
-### update
-
-Download only when the published version is higher. Same file set as a non-git update. `.env` is never overwritten.
-
-```bash
-dc update
-```
-
-### repull
-
-Re-download repo files even when the version already matches, then stop (does not loop). On a git checkout of this repo, pulls the remote instead.
-
-Files refreshed without git: `compose.sh`, `dc.bash`, `README.md`, `DOCS.md`, `docker-compose.yml`, `.env.example`, `.gitignore`, `LICENSE`.
-
-```bash
-dc repull
-```
-
-### bashrc
-
-Check `~/.bashrc` for `source …/dc.bash`. If missing, show the line and ask before appending it.
-
-```bash
-dc bashrc
-/path/to/compose.sh -a bashrc
-```
-
-### key
-
-Create or reuse an SSH key for `move` (`~/.ssh/id_ed25519` preferred, empty passphrase when creating).
-
-```bash
-dc key
-dc key root@other-host
-```
-
-With a host: ask before `ssh-copy-id`, then verify BatchMode connect. Remembers `host` → `user@host` for short-name moves. Without a host: print the install command and a sample `ssh-copy-id` line.
-
-### hosts
-
-List short host names saved by `key`, show `connects as`, and probe whether `move` can connect (✔ ok / ✘ fail).
-
-```bash
-dc hosts
-```
-
 ### path
 
-Print raw paths (used by move discovery):
+Internal action used by `move` discovery on the other host. Not listed in help. Prints raw paths:
 
 ```text
 script=/path/to/compose.sh
@@ -560,24 +490,71 @@ apps=/path/to/apps
 ```
 
 ```bash
-dc path
+compose.sh -a path
+```
+
+---
+
+## Script
+
+### update
+
+Print the local version and check GitHub. If a higher version exists, asks whether to install it (`[y/N]`). Scheduled / non-interactive runs install without asking. A local build ahead of GitHub does not prompt. `.env` is never overwritten.
+
+```bash
+dc update
+dc update --check
+dc update --force
+```
+
+- `--check` — report the version and whether a newer one exists; never installs
+- `--force` — re-download repo files even when the version already matches, then stop (does not loop)
+
+On a git checkout of this repo, update pulls the remote instead. Files refreshed without git: `compose.sh`, `dc.bash`, `README.md`, `DOCS.md`, `CHANGELOG.md`, `docker-compose.yml`, `.env.example`, `.gitignore`, `LICENSE`. After installing, the new script runs `update --check` once to show its version.
+
+Releases use **major.feature.fix**: feature bumps the middle number and resets fix to `0`; fixes bump the last number; breaking changes bump major.
+
+### host
+
+Manage the hosts `move` can send services to.
+
+```bash
+dc host add
+dc host add root@other-host
+dc host list
+dc host
+```
+
+- **add [user@host]** — create or reuse an SSH key (`~/.ssh/id_ed25519` preferred, empty passphrase when creating). With a host: ask before `ssh-copy-id`, then verify BatchMode connect, and remember `host` → `user@host` for short-name moves. Without a host: print the install command and a sample `ssh-copy-id` line.
+- **list** (default) — list saved short host names, show `connects as`, and probe whether `move` can connect (✔ ok / ✘ fail).
+
+### setup
+
+Check `~/.bashrc` for `source …/dc.bash`. If missing, show the line and ask before appending it. Works before `.env` exists, so a new install can run it first.
+
+```bash
+dc setup
+/path/to/compose.sh -a setup
 ```
 
 ### schedule
 
-Manage user crontab entries for this helper. Lines are tagged `# compose-schedule:ACTION`.
+Manage user crontab entries for this helper. Lines are tagged `# compose-schedule:ACTION [options]`. One schedule per action.
 
 ```bash
 dc schedule
-dc schedule add pull 0 4 '*' '*' '*'
-dc schedule remove pull
+dc schedule add images --pull 0 4 '*' '*' '*'
+dc schedule add update 0 5 '*' '*' 0
+dc schedule remove images
 ```
 
 - **list** (default) — show managed jobs and log paths
-- **add ACTION m h dom mon dow** — five cron fields; asks before writing
-- **remove ACTION** — asks before deleting
+- **add ACTION [options] m h dom mon dow** — options from that action (for example `images --pull`, `update --check`, `host list`), then five cron fields; asks before writing
+- **remove ACTION** — asks before deleting; also removes jobs for actions that no longer exist
 
-Allowed actions: `pull`, `update`, `tidy`, `issue`, `images`, `ports`, `df`, `hosts`, `nextport`, `version`, `list`, `ps`.
+Allowed actions: `list`, `ps`, `issue`, `images`, `ports`, `nextport`, `df`, `tidy`, `update`, `host`.
+
+Jobs from older versions that use `pull`, `hosts`, or `version` are marked on `dc schedule`, which offers to rewrite them as `images --pull`, `host list`, and `update --check` (keeping the time, env file, and paths).
 
 Cron runs with `COMPOSE_NONINTERACTIVE=1`. Logs go to `logs/schedule-ACTION.log` next to the script. Requires `crontab` on the host.
 
@@ -587,7 +564,7 @@ Show this documentation.
 
 ```bash
 dc docs
-dc docs pull
+dc docs images
 dc docs move
 dc docs schedule
 ```
@@ -627,9 +604,9 @@ From `.env.example` and script usage:
 
 ## SSH and move checklist
 
-1. `dc key root@other-host` — create/install key, remember short name  
-2. `dc hosts` — confirm ✔ ok  
-3. Ensure the other host has this script and `dc bashrc` sourced  
+1. `dc host add root@other-host` — create/install key, remember short name  
+2. `dc host list` — confirm ✔ ok  
+3. Ensure the other host has this script and ran `dc setup` (dc.bash sourced)  
 4. `dc move servicename other-host`  
 
 Password SSH is not used (`BatchMode=yes`). Use keys only.
