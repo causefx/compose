@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.11.3
-### ChangeNotes: safer env load, unused, disable, create, prune, and exit codes.
+VERSION=v1.11.4
+### ChangeNotes: faster startup, tables, env scans, and version check.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -11,6 +11,7 @@ SCRIPT_WORKING_DIR="$(dirname "$SCRIPT_PATH")"
 LATEST_RELEASE=""
 LATEST_CHANGES=""
 EXTRA_ARGS=()
+DockerCmd=()
 declare -A PROJECT_STATUS=()
 PROJECT_STATUS_LOADED=0
 declare -a CTR_SVC=() CTR_NAME=() CTR_STATUS=() CTR_PORTS=()
@@ -79,17 +80,14 @@ Ask() {
     printf '%s' "$reply"
 }
 
-PaintStatus() {
-    local text="$1"
-    local color="$c_dim"
-    local lower
-    lower="$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]')"
-    case "$lower" in
-        *unhealthy*|*restarting*|*paused*|*created*) color="$c_yellow" ;;
-        up\ *|*running*|*healthy*) color="$c_green" ;;
-        *exited*|*stopped*|*dead*) color="$c_red" ;;
+# Sets STATUS_COLOR for a container status (no subshell).
+StatusColor() {
+    STATUS_COLOR="$c_dim"
+    case "${1,,}" in
+        *unhealthy*|*restarting*|*paused*|*created*) STATUS_COLOR="$c_yellow" ;;
+        up\ *|*running*|*healthy*) STATUS_COLOR="$c_green" ;;
+        *exited*|*stopped*|*dead*) STATUS_COLOR="$c_red" ;;
     esac
-    printf '%b%s%b' "$color" "$text" "$c_reset"
 }
 
 ColumnWidth() {
@@ -102,17 +100,6 @@ ColumnWidth() {
         fi
     done
     printf '%s' "$max"
-}
-
-PadRight() {
-    local text="$1"
-    local width="$2"
-    local gap=$(( width - ${#text} ))
-    if (( gap > 0 )); then
-        printf '%s%*s' "$text" "$gap" ""
-    else
-        printf '%s' "$text"
-    fi
 }
 
 # Add an action here. Help, dispatch, and dc tab completion read this list.
@@ -300,6 +287,7 @@ ArchivedServiceDirs() {
 }
 
 CheckDockerCompose() {
+    [[ ${#DockerCmd[@]} -gt 0 ]] && return 0
     if docker compose version </dev/null &>/dev/null; then
         DockerCmd=(docker compose)
     elif docker-compose version </dev/null &>/dev/null || docker-compose -v </dev/null &>/dev/null; then
@@ -320,6 +308,7 @@ LoadProjectStatus() {
     fi
     PROJECT_STATUS=()
     PROJECT_STATUS_LOADED=1
+    CheckDockerCompose
     json="$("${DockerCmd[@]}" ls -a --format json 2>/dev/null || true)"
     [[ -n "$json" ]] || return 0
 
@@ -483,10 +472,21 @@ VersionIsNewer() {
 
 CheckVersion() {
     local mode="$1"
-    local answer
+    local answer head line
 
-    LATEST_RELEASE="$(curl -fsS -r 0-50 "$GITHUB_RAWURL" | sed -n "/VERSION/s/VERSION=//p" | tr -d '"\r')"
-    LATEST_CHANGES="$(curl -fsS -r 0-200 "$GITHUB_RAWURL" | sed -n "/ChangeNotes/s/### ChangeNotes: //p" | tr -d '\r')"
+    LATEST_RELEASE=""
+    LATEST_CHANGES=""
+    head="$(curl -fsS -r 0-200 "$GITHUB_RAWURL" 2>/dev/null || true)"
+    while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        case "$line" in
+            VERSION=*)
+                LATEST_RELEASE="${line#VERSION=}"
+                LATEST_RELEASE="${LATEST_RELEASE//\"/}"
+                ;;
+            "### ChangeNotes: "*) LATEST_CHANGES="${line#"### ChangeNotes: "}" ;;
+        esac
+    done <<< "$head"
 
     if [[ -z "$LATEST_RELEASE" ]]; then
         Say warn "Could not check for updates."
@@ -665,15 +665,22 @@ Update() {
   UpdateCurl
 }
 
-ServiceEnvLabel() {
-    local dir="$1"
-    local f
-    while IFS= read -r f; do
-        [[ -n "$f" ]] || continue
-        printf '%s\n' "yes"
-        return 0
-    done < <(EnvFilesInDir "$dir")
-    printf '%s\n' "-"
+# Exit 0 when the folder has a service env file (same filter as EnvFilesInDir, no subshell).
+HasServiceEnv() {
+    local dir="${1%/}" f had=0 rc=1
+    shopt -q nullglob && had=1
+    shopt -s nullglob
+    for f in "$dir"/.env "$dir"/.env.* "$dir"/*.env; do
+        [[ -f "$f" ]] || continue
+        case "$f" in
+            *.bak|*.example|*.sample|*.swp|*~) continue ;;
+        esac
+        [[ -n "${envFile:-}" && "$f" -ef "$envFile" ]] && continue
+        rc=0
+        break
+    done
+    [[ "$had" -eq 1 ]] || shopt -u nullglob
+    return "$rc"
 }
 
 List() {
@@ -683,12 +690,12 @@ List() {
     Banner "list"
     LoadProjectStatus
     while IFS= read -r dir; do
-        path="$(basename "$dir")"
-        status="$(ReturnStatus "$path")"
-        if [ -z "$status" ] || [ "$status" = " - " ]; then
-            status="no container"
-        fi
-        env_label="$(ServiceEnvLabel "$dir")"
+        path="${dir%/}"
+        path="${path##*/}"
+        status="${PROJECT_STATUS[$path]:-}"
+        [[ -n "$status" ]] || status="no container"
+        env_label="-"
+        HasServiceEnv "$dir" && env_label="yes"
         if [ -f "$dir/$COMPOSE_FILE" ]; then
             en_name+=("$path")
             en_status+=("$status")
@@ -704,9 +711,14 @@ List() {
     done < <(ServiceDirs)
     while IFS= read -r dir; do
         [[ -n "$dir" ]] || continue
-        path="$(basename "$dir")"
+        path="${dir%/}"
+        path="${path##*/}"
         ar_name+=("$path")
-        ar_env+=("$(ServiceEnvLabel "$dir")")
+        if HasServiceEnv "$dir"; then
+            ar_env+=("yes")
+        else
+            ar_env+=("-")
+        fi
         archived_count=$((archived_count+1))
     done < <(ArchivedServiceDirs)
     if [[ ${#en_name[@]} -eq 0 && ${#dis_name[@]} -eq 0 && ${#ar_name[@]} -eq 0 ]]; then
@@ -714,9 +726,9 @@ List() {
         return
     fi
     width="$(ColumnWidth 7 "${en_name[@]}" "${dis_name[@]}" "${ar_name[@]}")"
-    printf "%b     %s  │  %s  │  %s%b\n" "$c_dim" \
-        "$(PadRight "service" "$width")" \
-        "$(PadRight "env" 3)" \
+    printf "%b     %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
+        "$width" "service" \
+        3 "env" \
         "containers" "$c_reset"
     for i in "${!en_name[@]}"; do
         if [[ "${en_env[$i]}" == "yes" ]]; then
@@ -726,13 +738,14 @@ List() {
             env_label="-"
             env_color="$c_dim"
         fi
-        printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+        StatusColor "${en_status[$i]}"
+        printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
             "$c_green" "✔" "$c_reset" \
-            "$(PadRight "${en_name[$i]}" "$width")" \
+            "$width" "${en_name[$i]}" \
             "$c_dim" "$c_reset" \
-            "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
+            "$env_color" 3 "$env_label" "$c_reset" \
             "$c_dim" "$c_reset" \
-            "$(PaintStatus "${en_status[$i]}")"
+            "$STATUS_COLOR" "${en_status[$i]}" "$c_reset"
     done
     if [[ ${#dis_name[@]} -gt 0 ]]; then
         [[ ${#en_name[@]} -gt 0 ]] && printf "\n  %bdisabled%b\n" "$c_dim" "$c_reset"
@@ -744,13 +757,14 @@ List() {
                 env_label="-"
                 env_color="$c_dim"
             fi
-            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+            StatusColor "${dis_status[$i]}"
+            printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
                 "$c_red" "✘" "$c_reset" \
-                "$(PadRight "${dis_name[$i]}" "$width")" \
+                "$width" "${dis_name[$i]}" \
                 "$c_dim" "$c_reset" \
-                "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
+                "$env_color" 3 "$env_label" "$c_reset" \
                 "$c_dim" "$c_reset" \
-                "$(PaintStatus "${dis_status[$i]}")"
+                "$STATUS_COLOR" "${dis_status[$i]}" "$c_reset"
         done
     fi
     if [[ ${#ar_name[@]} -gt 0 ]]; then
@@ -763,11 +777,11 @@ List() {
                 env_label="-"
                 env_color="$c_dim"
             fi
-            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %b%s%b\n" \
+            printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
                 "$c_dim" "▢" "$c_reset" \
-                "$(PadRight "${ar_name[$i]}" "$width")" \
+                "$width" "${ar_name[$i]}" \
                 "$c_dim" "$c_reset" \
-                "$env_color" "$(PadRight "$env_label" 3)" "$c_reset" \
+                "$env_color" 3 "$env_label" "$c_reset" \
                 "$c_dim" "$c_reset" \
                 "$c_dim" "archived" "$c_reset"
         done
@@ -834,8 +848,13 @@ ListArchived() {
     done < <(
         while IFS= read -r dir; do
             [[ -n "$dir" ]] || continue
-            path="$(basename "$dir")"
-            printf '%s|%s\n' "$path" "$(ServiceEnvLabel "$dir")"
+            path="${dir%/}"
+            path="${path##*/}"
+            if HasServiceEnv "$dir"; then
+                printf '%s|yes\n' "$path"
+            else
+                printf '%s|-\n' "$path"
+            fi
         done < <(ArchivedServiceDirs) | LC_ALL=C sort -t '|' -k1,1
     )
     if [[ ${#names[@]} -eq 0 ]]; then
@@ -844,7 +863,7 @@ ListArchived() {
         return 0
     fi
     width="$(ColumnWidth 7 "${names[@]}")"
-    printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "env" "$c_reset"
+    printf "%b  %-*s  │  %s%b\n" "$c_dim" "$width" "service" "env" "$c_reset"
     for i in "${!names[@]}"; do
         if [[ "${envs[$i]}" == "yes" ]]; then
             env_label="yes"
@@ -853,9 +872,9 @@ ListArchived() {
             env_label="-"
             env_color="$c_dim"
         fi
-        printf "  %b%s%b  %s  %b│%b  %b%s%b\n" \
+        printf "  %b%s%b  %-*s  %b│%b  %b%s%b\n" \
             "$c_dim" "▢" "$c_reset" \
-            "$(PadRight "${names[$i]}" "$width")" \
+            "$width" "${names[$i]}" \
             "$c_dim" "$c_reset" \
             "$env_color" "$env_label" "$c_reset"
     done
@@ -1175,48 +1194,78 @@ ServiceEnvPrefix() {
     printf '%s\n' "$n"
 }
 
-# Print other service names that reference or define $key (skip $self folder).
-VarExternalUsers() {
-    local key="$1" self="$2"
-    local dir path compose_file f
-    local -A seen=()
+declare -A IDX_CREFS=() IDX_EREFS=() IDX_DEFS=() IDX_STATE=()
+IDX_NAMES=()
+IDX_LOADED=0
 
-    ScanDir() {
-        local d="$1"
-        path="$(basename "$d")"
-        [[ "$path" == "$self" ]] && return 0
-        if [[ -f "$d/$COMPOSE_FILE" ]]; then
-            compose_file="$d/$COMPOSE_FILE"
-        elif [[ -f "$d/$COMPOSE_FILE_DISABLED" ]]; then
-            compose_file="$d/$COMPOSE_FILE_DISABLED"
-        else
-            return 0
-        fi
-        if ComposeUsesVar "$compose_file" "$key" || ServiceEnvUsesVar "$compose_file" "$key"; then
-            [[ -n "${seen[$path]+x}" ]] && return 0
-            seen["$path"]=1
-            printf '%s\n' "$path"
-            return 0
-        fi
-        while IFS= read -r f; do
-            [[ -n "$f" ]] || continue
-            if [[ -n "$(EnvRawLine "$f" "$key")" ]]; then
-                [[ -n "${seen[$path]+x}" ]] && return 0
-                seen["$path"]=1
-                printf '%s\n' "$path"
-                return 0
-            fi
-        done < <(ServiceEnvFiles "$compose_file")
-    }
+# Every key assigned in an env file (no filtering), one awk pass.
+EnvFileDefinedKeys() {
+    [[ -f "$1" ]] || return 0
+    awk '
+        {
+            sub(/\r$/, "")
+            sub(/^[[:space:]]+/, "")
+            sub(/^export[[:space:]]+/, "")
+            if (match($0, /^[A-Za-z_][A-Za-z0-9_]*=/)) print substr($0, 1, RLENGTH - 1)
+        }
+    ' "$1"
+}
 
+IndexOneService() {
+    local dir="${1%/}" loc="$2"
+    local name compose_file state f
+    local -a crefs=() erefs=() defs=() part=()
+    name="${dir##*/}"
+    [[ -n "${IDX_STATE[$name]+x}" ]] && return 0
+    if [[ -f "$dir/$COMPOSE_FILE" ]]; then
+        compose_file="$dir/$COMPOSE_FILE"
+        state=enabled
+    elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
+        compose_file="$dir/$COMPOSE_FILE_DISABLED"
+        state=disabled
+    else
+        return 0
+    fi
+    [[ "$loc" == "archive" ]] && state=archived
+    mapfile -t crefs < <(ComposeVarNames "$compose_file")
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        mapfile -t part < <(EnvFileRefNames "$f")
+        erefs+=("${part[@]}")
+        mapfile -t part < <(EnvFileDefinedKeys "$f")
+        defs+=("${part[@]}")
+    done < <(EnvFilesInDir "$dir")
+    IDX_NAMES+=("$name")
+    IDX_STATE["$name"]="$state"
+    IDX_CREFS["$name"]=" ${crefs[*]} "
+    IDX_EREFS["$name"]=" ${erefs[*]} "
+    IDX_DEFS["$name"]=" ${defs[*]} "
+}
+
+# One pass over every service (APPS, then ARCHIVE): compose refs, env-value
+# refs, and defined env keys. Look keys up with " $key " matches.
+BuildServiceIndex() {
+    local dir
+    [[ "$IDX_LOADED" -eq 1 ]] && return 0
+    IDX_LOADED=1
     while IFS= read -r dir; do
-        [[ -n "$dir" ]] || continue
-        ScanDir "$dir"
+        [[ -n "$dir" ]] && IndexOneService "$dir" apps
     done < <(ServiceDirs)
     while IFS= read -r dir; do
-        [[ -n "$dir" ]] || continue
-        ScanDir "$dir"
+        [[ -n "$dir" ]] && IndexOneService "$dir" archive
     done < <(ArchivedServiceDirs)
+}
+
+# Print other service names that reference or define $key (skip $self folder).
+VarExternalUsers() {
+    local key="$1" self="$2" name
+    BuildServiceIndex
+    for name in "${IDX_NAMES[@]}"; do
+        [[ "$name" == "$self" ]] && continue
+        if [[ "${IDX_CREFS[$name]}" == *" $key "* || "${IDX_EREFS[$name]}" == *" $key "* || "${IDX_DEFS[$name]}" == *" $key "* ]]; then
+            printf '%s\n' "$name"
+        fi
+    done
 }
 
 # Keys in project + this service env files starting with PREFIX_.
@@ -1411,6 +1460,8 @@ Rename() {
 
     old_prefix="$(ServiceEnvPrefix "$old")"
     new_prefix="$(ServiceEnvPrefix "$new")"
+    BuildServiceIndex
+    LoadEnvMap "$compose_file"
     while IFS= read -r key; do
         [[ -n "$key" ]] || continue
         new_key="${new_prefix}_${key#"${old_prefix}_"}"
@@ -1426,7 +1477,7 @@ Rename() {
             Say warn "$key also used in: ${external[*]}"
             continue
         fi
-        if [[ -n "$(LookupEnvAssignment "$new_key" "$compose_file")" ]]; then
+        if [[ -n "${ENV_MAP_LINE[$new_key]:-}" ]]; then
             Say warn "Skip $key → $new_key · target key already set."
             env_skip+=("$key")
             continue
@@ -1476,7 +1527,8 @@ Rename() {
     fi
 
     if [[ "$enabled" -eq 1 && "$loc" == "apps" ]]; then
-        run_state="$(printf '%s' "$(ReturnStatus "$old")" | tr '[:upper:]' '[:lower:]')"
+        run_state="$(ReturnStatus "$old")"
+        run_state="${run_state,,}"
         if [[ "$run_state" == *running* || "$run_state" == *restarting* || "$run_state" == *paused* ]]; then
             Say warn "Stopping $old."
             RunOneCompose "$compose_file" down || {
@@ -1616,7 +1668,7 @@ ComposeSteadyLabel() {
         if [[ "$verb" == "restart" && "$status" == "Started" ]]; then
             key="restarted"
         else
-            key="$(printf '%s' "$status" | tr '[:upper:]' '[:lower:]')"
+            key="${status,,}"
         fi
         tally["$key"]=$((${tally[$key]:-0}+1))
     done < <(tr '\r' '\n' < "$file")
@@ -1706,6 +1758,7 @@ RunOneCompose() {
     local file="$1"
     shift
     local -a args=(--file "$file")
+    CheckDockerCompose
     AppendEnvFileArgs args "$file"
     "${DockerCmd[@]}" "${args[@]}" "$@"
 }
@@ -1766,9 +1819,9 @@ RunComposeBrief() {
     }
     RunOneCompose "$file" "$@" >"$outfile" 2>&1 &
     pid=$!
-    start=$(date +%s)
+    start=$SECONDS
     while kill -0 "$pid" 2>/dev/null; do
-        now=$(date +%s)
+        now=$SECONDS
         if [[ $((now - start)) -ge 3 ]]; then
             printf "\r\033[K%b── %s ──%b\n" "$c_yellow" "$name" "$c_reset"
             if tail --pid="$pid" -n +1 -f "$outfile" 2>/dev/null; then
@@ -2018,7 +2071,7 @@ CleanError() {
 
 ClassifyStatus() {
     local low
-    low="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    low="${1,,}"
     case "$low" in
         *restarting*) printf '%s' restarting ;;
         *dead*) printf '%s' dead ;;
@@ -2222,11 +2275,11 @@ Ps() {
     svc_w="$(ColumnWidth 7 "${CTR_SVC[@]}")"
     name_w="$(ColumnWidth 4 "${CTR_NAME[@]}")"
     status_w="$(ColumnWidth 6 "${CTR_STATUS[@]}")"
-    printf "%b       %s  │  %s  │  %s  │  %s%b\n" "$c_dim" \
-        "$(PadRight "service" "$svc_w")" "$(PadRight "name" "$name_w")" \
-        "$(PadRight "status" "$status_w")" "ports" "$c_reset"
+    printf "%b       %-*s  │  %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
+        "$svc_w" "service" "$name_w" "name" \
+        "$status_w" "status" "ports" "$c_reset"
     for i in "${!CTR_NAME[@]}"; do
-        low="$(printf '%s' "${CTR_STATUS[$i]}" | tr '[:upper:]' '[:lower:]')"
+        low="${CTR_STATUS[$i],,}"
         case "$low" in
             *restarting*|*unhealthy*) mark="·"; color="$c_yellow" ;;
             up\ *|*healthy*) mark="✔"; color="$c_green" ;;
@@ -2235,13 +2288,14 @@ Ps() {
         esac
         ports_text="${CTR_PORTS[$i]}"
         [[ -z "$ports_text" ]] && ports_text="-"
-        printf "  %b%s%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s\n" \
+        StatusColor "${CTR_STATUS[$i]}"
+        printf "  %b%s%b  %-*s  %b│%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %s\n" \
             "$color" "$mark" "$c_reset" \
-            "$(PadRight "${CTR_SVC[$i]}" "$svc_w")" \
+            "$svc_w" "${CTR_SVC[$i]}" \
             "$c_dim" "$c_reset" \
-            "$(PadRight "${CTR_NAME[$i]}" "$name_w")" \
+            "$name_w" "${CTR_NAME[$i]}" \
             "$c_dim" "$c_reset" \
-            "$(PaintStatus "$(PadRight "${CTR_STATUS[$i]}" "$status_w")")" \
+            "$STATUS_COLOR" "$status_w" "${CTR_STATUS[$i]}" "$c_reset" \
             "$c_dim" "$c_reset" \
             "$ports_text"
     done
@@ -2270,7 +2324,7 @@ Issue() {
     for i in "${!CTR_NAME[@]}"; do
         kind="$(ClassifyStatus "${CTR_STATUS[$i]}")"
         [[ -n "$kind" ]] || continue
-        low="$(printf '%s' "${CTR_STATUS[$i]}" | tr '[:upper:]' '[:lower:]')"
+        low="${CTR_STATUS[$i],,}"
         oom="" restarts="" code="" error="" policy=""
         blob="$(ReadInspect "${CTR_NAME[$i]}")"
         if [[ -n "$blob" ]]; then
@@ -2306,11 +2360,12 @@ Issue() {
             title="${CTR_SVC[$i]}"
         fi
         printf "  %b%s%b  %s\n" "$color" "$mark" "$c_reset" "$title"
+        StatusColor "${CTR_STATUS[$i]}"
         if [[ "$title" != "${CTR_NAME[$i]}" ]]; then
-            printf "     %b%s%b  %b·%b  %s\n" "$c_dim" "${CTR_NAME[$i]}" "$c_reset" \
-                "$c_dim" "$c_reset" "$(PaintStatus "${CTR_STATUS[$i]}")"
+            printf "     %b%s%b  %b·%b  %b%s%b\n" "$c_dim" "${CTR_NAME[$i]}" "$c_reset" \
+                "$c_dim" "$c_reset" "$STATUS_COLOR" "${CTR_STATUS[$i]}" "$c_reset"
         else
-            printf "     %s\n" "$(PaintStatus "${CTR_STATUS[$i]}")"
+            printf "     %b%s%b\n" "$STATUS_COLOR" "${CTR_STATUS[$i]}" "$c_reset"
         fi
         printf "     %s\n" "$hint"
         while IFS= read -r cmd; do
@@ -2357,7 +2412,7 @@ Stats() {
         return 0
     fi
     for i in "${!CTR_NAME[@]}"; do
-        low="$(printf '%s' "${CTR_STATUS[$i]}" | tr '[:upper:]' '[:lower:]')"
+        low="${CTR_STATUS[$i],,}"
         [[ "$low" == up\ * ]] || continue
         running+=("${CTR_NAME[$i]}")
     done
@@ -2408,19 +2463,19 @@ Stats() {
     name_w="$(ColumnWidth 4 "${row_name[@]}")"
     cpu_w="$(ColumnWidth 3 "${row_cpu[@]}")"
     mem_w="$(ColumnWidth 3 "${row_mem[@]}")"
-    printf "%b       %s  │  %s  │  %s  │  %s  │  %s%b\n" "$c_dim" \
-        "$(PadRight "service" "$svc_w")" "$(PadRight "name" "$name_w")" \
-        "$(PadRight "cpu" "$cpu_w")" "$(PadRight "memory" "$mem_w")" "network" "$c_reset"
+    printf "%b       %-*s  │  %-*s  │  %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
+        "$svc_w" "service" "$name_w" "name" \
+        "$cpu_w" "cpu" "$mem_w" "memory" "network" "$c_reset"
     for i in "${!row_name[@]}"; do
-        printf "  %b·%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s  %b│%b  %s\n" \
+        printf "  %b·%b  %-*s  %b│%b  %-*s  %b│%b  %-*s  %b│%b  %-*s  %b│%b  %s\n" \
             "$c_teal" "$c_reset" \
-            "$(PadRight "${row_svc[$i]}" "$svc_w")" \
+            "$svc_w" "${row_svc[$i]}" \
             "$c_dim" "$c_reset" \
-            "$(PadRight "${row_name[$i]}" "$name_w")" \
+            "$name_w" "${row_name[$i]}" \
             "$c_dim" "$c_reset" \
-            "$(PadRight "${row_cpu[$i]}" "$cpu_w")" \
+            "$cpu_w" "${row_cpu[$i]}" \
             "$c_dim" "$c_reset" \
-            "$(PadRight "${row_mem[$i]}" "$mem_w")" \
+            "$mem_w" "${row_mem[$i]}" \
             "$c_dim" "$c_reset" \
             "${row_net[$i]}"
     done
@@ -2511,105 +2566,78 @@ ValidServiceName() {
     [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]
 }
 
+# Unique ${VAR} / $VAR names in a compose file, one awk pass.
 ComposeVarNames() {
-    local file="$1" text match name new
-    local -A seen=()
-    text="$(tr -d '\r' < "$file")"
-    while [[ "$text" =~ \$\{([A-Za-z_][A-Za-z0-9_]*) ]]; do
-        name="${BASH_REMATCH[1]}"
-        match="${BASH_REMATCH[0]}"
-        if [[ -z "${seen[$name]+x}" ]]; then
-            seen["$name"]=1
-            printf '%s\n' "$name"
-        fi
-        new="${text/"$match"/}"
-        [[ "$new" == "$text" ]] && break
-        text="$new"
-    done
-    while [[ "$text" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
-        name="${BASH_REMATCH[1]}"
-        match="${BASH_REMATCH[0]}"
-        if [[ -z "${seen[$name]+x}" ]]; then
-            seen["$name"]=1
-            printf '%s\n' "$name"
-        fi
-        new="${text/"$match"/}"
-        [[ "$new" == "$text" ]] && break
-        text="$new"
-    done
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    awk '
+        {
+            s = $0
+            while (match(s, /[$][{]?[A-Za-z_][A-Za-z0-9_]*/)) {
+                n = substr(s, RSTART, RLENGTH)
+                s = substr(s, RSTART + RLENGTH)
+                sub(/^[$][{]?/, "", n)
+                if (!(n in seen)) { seen[n] = 1; print n }
+            }
+        }
+    ' "$file"
 }
 
-EnvRawLine() {
-    local file="$1" key="$2" line found="" k
+declare -A ENV_MAP_SRC=() ENV_MAP_LINE=()
+
+LoadEnvMapFile() {
+    local file="$1" src="$2" line k
+    [[ -f "$file" ]] || return 0
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line//$'\r'/}"
         [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
         k="${BASH_REMATCH[1]}"
-        [[ "$k" == "$key" ]] || continue
-        line="${line#"${line%%[![:space:]]*}"}"
-        found="$line"
+        ENV_MAP_SRC["$k"]="$src"
+        ENV_MAP_LINE["$k"]="${line#"${line%%[![:space:]]*}"}"
     done < "$file"
-    [[ -n "$found" ]] && printf '%s\n' "$found"
 }
 
-# Last wins: project .env → "shared", service-folder env → "service", else "".
-LookupEnvSource() {
-    local key="$1" compose_file="$2"
-    local file line source=""
+# One pass over the env chain for a compose file, last assignment wins.
+# ENV_MAP_SRC[key] is "shared" (project .env) or "service"; ENV_MAP_LINE[key] is the raw line.
+LoadEnvMap() {
+    local compose_file="$1" f
+    ENV_MAP_SRC=()
+    ENV_MAP_LINE=()
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
-        line="$(EnvRawLine "$envFile" "$key")"
-        [[ -n "$line" ]] && source="shared"
+        LoadEnvMapFile "$envFile" shared
     fi
-    while IFS= read -r file; do
-        [[ -n "$file" ]] || continue
-        line="$(EnvRawLine "$file" "$key")"
-        [[ -n "$line" ]] && source="service"
+    while IFS= read -r f; do
+        [[ -n "$f" ]] && LoadEnvMapFile "$f" service
     done < <(ServiceEnvFiles "$compose_file")
-    printf '%s\n' "$source"
-}
-
-# Last assignment wins: project .env, then service-folder env files.
-LookupEnvAssignment() {
-    local key="$1" compose_file="$2"
-    local file line found=""
-    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
-        line="$(EnvRawLine "$envFile" "$key")"
-        [[ -n "$line" ]] && found="$line"
-    fi
-    while IFS= read -r file; do
-        [[ -n "$file" ]] || continue
-        line="$(EnvRawLine "$file" "$key")"
-        [[ -n "$line" ]] && found="$line"
-    done < <(ServiceEnvFiles "$compose_file")
-    [[ -n "$found" ]] && printf '%s\n' "$found"
 }
 
 # Parse one env file into shell variables without executing it.
 # Unquoted and double-quoted values expand like Compose; single-quoted stay literal.
 ApplyEnvFileToShell() {
-    local f="$1"
-    local line key raw val
-    [[ -f "$f" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line//$'\r'/}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        line="${line#export }"
-        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-        key="${BASH_REMATCH[1]}"
-        raw="${BASH_REMATCH[2]}"
-        if [[ "$raw" == \'*\' ]]; then
-            val="${raw:1:${#raw}-2}"
-        elif [[ "$raw" == \"*\" ]]; then
-            val="$(ExpandComposeValue "${raw:1:${#raw}-2}")"
+    local _aef_file="$1" _aef_line _aef_key _aef_raw _aef_val
+    [[ -f "$_aef_file" ]] || return 0
+    while IFS= read -r _aef_line || [[ -n "$_aef_line" ]]; do
+        _aef_line="${_aef_line//$'\r'/}"
+        _aef_line="${_aef_line#"${_aef_line%%[![:space:]]*}"}"
+        _aef_line="${_aef_line%"${_aef_line##*[![:space:]]}"}"
+        [[ -z "$_aef_line" || "$_aef_line" == \#* ]] && continue
+        _aef_line="${_aef_line#export }"
+        [[ "$_aef_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        _aef_key="${BASH_REMATCH[1]}"
+        _aef_raw="${BASH_REMATCH[2]}"
+        if [[ "$_aef_raw" == \'*\' ]]; then
+            _aef_val="${_aef_raw:1:${#_aef_raw}-2}"
+        elif [[ "$_aef_raw" == \"*\" ]]; then
+            ExpandComposeInto "${_aef_raw:1:${#_aef_raw}-2}"
+            _aef_val="$EXPANDED"
         else
-            raw="${raw#"${raw%%[![:space:]]*}"}"
-            raw="${raw%"${raw##*[![:space:]]}"}"
-            val="$(ExpandComposeValue "$raw")"
+            _aef_raw="${_aef_raw#"${_aef_raw%%[![:space:]]*}"}"
+            _aef_raw="${_aef_raw%"${_aef_raw##*[![:space:]]}"}"
+            ExpandComposeInto "$_aef_raw"
+            _aef_val="$EXPANDED"
         fi
-        printf -v "$key" '%s' "$val"
-    done < "$f"
+        printf -v "$_aef_key" '%s' "$_aef_val"
+    done < "$_aef_file"
 }
 
 # Load project then service env files into the shell (last wins).
@@ -2632,9 +2660,10 @@ EnvsFill() {
     local name answer created=0
     local -a missing=()
 
+    LoadEnvMap "$file"
     while IFS= read -r name; do
         [[ -n "$name" ]] || continue
-        [[ -z "$(LookupEnvSource "$name" "$file")" ]] && missing+=("$name")
+        [[ -z "${ENV_MAP_SRC[$name]:-}" ]] && missing+=("$name")
     done < <(ComposeVarNames "$file" | LC_ALL=C sort -u)
 
     if [[ ${#missing[@]} -eq 0 ]]; then
@@ -2735,8 +2764,9 @@ Envs() {
     if [[ "$show_values" -eq 1 ]]; then
         ApplyEnvFilesForService "$file"
     fi
+    LoadEnvMap "$file"
     for name in "${names[@]}"; do
-        source="$(LookupEnvSource "$name" "$file")"
+        source="${ENV_MAP_SRC[$name]:-}"
         case "$source" in
             shared) rank=1 ;;
             service) rank=2 ;;
@@ -2749,13 +2779,13 @@ Envs() {
     done
     width="$(ColumnWidth 3 "${names[@]}")"
     if [[ "$show_values" -eq 1 ]]; then
-        printf "%b  %s  │  %s  │  %s%b\n" "$c_dim" \
-            "$(PadRight "var" "$width")" \
-            "$(PadRight "from" "$from_w")" \
+        printf "%b  %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
+            "$width" "var" \
+            "$from_w" "from" \
             "value" "$c_reset"
     else
-        printf "%b  %s  │  %s%b\n" "$c_dim" \
-            "$(PadRight "var" "$width")" \
+        printf "%b  %-*s  │  %s%b\n" "$c_dim" \
+            "$width" "var" \
             "from" "$c_reset"
     fi
     while IFS='|' read -r rank source name; do
@@ -2770,21 +2800,21 @@ Envs() {
         fi
         if [[ "$show_values" -eq 1 ]]; then
             if [[ "$source" != "-" ]] && VarIsSet "$name"; then
-                value="$(VarValue "$name")"
+                value="${!name}"
                 val_color="$c_reset"
             else
                 value="-"
                 val_color="$c_dim"
             fi
-            printf "  %b%s%b  %b│%b  %b%s%b  %b│%b  %b%s%b\n" \
-                "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" \
+            printf "  %b%-*s%b  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
+                "$c_teal" "$width" "$name" "$c_reset" \
                 "$c_dim" "$c_reset" \
-                "$src_color" "$(PadRight "$source" "$from_w")" "$c_reset" \
+                "$src_color" "$from_w" "$source" "$c_reset" \
                 "$c_dim" "$c_reset" \
                 "$val_color" "$value" "$c_reset"
         else
-            printf "  %b%s%b  %b│%b  %b%s%b\n" \
-                "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" \
+            printf "  %b%-*s%b  %b│%b  %b%s%b\n" \
+                "$c_teal" "$width" "$name" "$c_reset" \
                 "$c_dim" "$c_reset" \
                 "$src_color" "$source" "$c_reset"
         fi
@@ -2795,73 +2825,27 @@ Envs() {
     fi
 }
 
-ComposeUsesVar() {
-    local file="$1" want="$2" name
-    [[ -f "$file" ]] || return 1
-    while IFS= read -r name; do
-        [[ "$name" == "$want" ]] && return 0
-    done < <(ComposeVarNames "$file")
-    return 1
-}
-
-EnvFileUsesVar() {
-    local file="$1" want="$2" name
-    [[ -f "$file" ]] || return 1
-    while IFS= read -r name; do
-        [[ "$name" == "$want" ]] && return 0
-    done < <(EnvFileRefNames "$file")
-    return 1
-}
-
-# Names referenced in env values (${VAR} / $VAR). Skips single-quoted values.
+# Names referenced in env values (${VAR} / $VAR), one awk pass. Skips single-quoted values.
 EnvFileRefNames() {
-    local file="$1" line raw match name new
-    local -A seen=()
+    local file="$1"
     [[ -f "$file" ]] || return 0
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line//$'\r'/}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=(.*)$ ]] || continue
-        raw="${BASH_REMATCH[1]}"
-        if [[ "$raw" == \'*\' ]]; then
-            continue
-        fi
-        if [[ "$raw" == \"*\" ]]; then
-            raw="${raw:1:${#raw}-2}"
-        fi
-        while [[ "$raw" =~ \$\{([A-Za-z_][A-Za-z0-9_]*) ]]; do
-            name="${BASH_REMATCH[1]}"
-            match="${BASH_REMATCH[0]}"
-            if [[ -z "${seen[$name]+x}" ]]; then
-                seen["$name"]=1
-                printf '%s\n' "$name"
-            fi
-            new="${raw/"$match"/}"
-            [[ "$new" == "$raw" ]] && break
-            raw="$new"
-        done
-        while [[ "$raw" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
-            name="${BASH_REMATCH[1]}"
-            match="${BASH_REMATCH[0]}"
-            if [[ -z "${seen[$name]+x}" ]]; then
-                seen["$name"]=1
-                printf '%s\n' "$name"
-            fi
-            new="${raw/"$match"/}"
-            [[ "$new" == "$raw" ]] && break
-            raw="$new"
-        done
-    done < "$file"
-}
-
-ServiceEnvUsesVar() {
-    local compose_file="$1" want="$2" f
-    while IFS= read -r f; do
-        [[ -n "$f" ]] || continue
-        EnvFileUsesVar "$f" "$want" && return 0
-    done < <(ServiceEnvFiles "$compose_file")
-    return 1
+    awk '
+        {
+            sub(/\r$/, "")
+            sub(/^[[:space:]]+/, "")
+            if ($0 == "" || substr($0, 1, 1) == "#") next
+            sub(/^export[[:space:]]+/, "")
+            if (!match($0, /^[A-Za-z_][A-Za-z0-9_]*=/)) next
+            v = substr($0, RLENGTH + 1)
+            if (v ~ /^'\''.*'\''$/) next
+            while (match(v, /[$][{]?[A-Za-z_][A-Za-z0-9_]*/)) {
+                n = substr(v, RSTART, RLENGTH)
+                v = substr(v, RSTART + RLENGTH)
+                sub(/^[$][{]?/, "", n)
+                if (!(n in seen)) { seen[n] = 1; print n }
+            }
+        }
+    ' "$file"
 }
 
 Where() {
@@ -2887,25 +2871,18 @@ Where() {
         Say info "dc where MEDIA"
         exit 1
     fi
-    if [[ -n "${envFile:-}" && -f "$envFile" ]] && [[ -n "$(EnvRawLine "$envFile" "$var")" ]]; then
-        defined="shared"
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        LoadEnvMapFile "$envFile" shared
+        [[ -n "${ENV_MAP_SRC[$var]+x}" ]] && defined="shared"
     fi
-    while IFS= read -r dir; do
-        [[ -n "$dir" ]] || continue
-        path="$(basename "$dir")"
-        if [[ -f "$dir/$COMPOSE_FILE" ]]; then
-            compose_file="$dir/$COMPOSE_FILE"
-            state="enabled"
-        elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
-            compose_file="$dir/$COMPOSE_FILE_DISABLED"
-            state="disabled"
-        else
-            continue
-        fi
+    BuildServiceIndex
+    for path in "${IDX_NAMES[@]}"; do
+        state="${IDX_STATE[$path]}"
+        [[ "$state" == "archived" ]] && continue
         in_compose=0
         in_env=0
-        ComposeUsesVar "$compose_file" "$var" && in_compose=1
-        ServiceEnvUsesVar "$compose_file" "$var" && in_env=1
+        [[ "${IDX_CREFS[$path]}" == *" $var "* ]] && in_compose=1
+        [[ "${IDX_EREFS[$path]}" == *" $var "* ]] && in_env=1
         if [[ "$in_compose" -eq 0 && "$in_env" -eq 0 ]]; then
             continue
         fi
@@ -2918,7 +2895,7 @@ Where() {
         fi
         names+=("$path")
         rows+=("${path}|${state}|${label}")
-    done < <(ServiceDirs)
+    done
     Say info "$var"
     if [[ -n "$defined" ]]; then
         Say info "Defined in shared"
@@ -2929,26 +2906,26 @@ Where() {
     fi
     Say info "${#names[@]} service(s)"
     width="$(ColumnWidth 7 "${names[@]}")"
-    printf "%b  %s  │  %s  │  %s%b\n" "$c_dim" \
-        "$(PadRight "service" "$width")" \
-        "$(PadRight "state" 8)" \
+    printf "%b  %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
+        "$width" "service" \
+        8 "state" \
         "in" "$c_reset"
     while IFS='|' read -r name state label; do
         [[ -n "$name" ]] || continue
         if [[ "$state" == "enabled" ]]; then
-            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+            printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %s\n" \
                 "$c_green" "✔" "$c_reset" \
-                "$(PadRight "$name" "$width")" \
+                "$width" "$name" \
                 "$c_dim" "$c_reset" \
-                "$c_green" "$(PadRight "enabled" 8)" "$c_reset" \
+                "$c_green" 8 "enabled" "$c_reset" \
                 "$c_dim" "$c_reset" \
                 "$label"
         else
-            printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+            printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %s\n" \
                 "$c_red" "✘" "$c_reset" \
-                "$(PadRight "$name" "$width")" \
+                "$width" "$name" \
                 "$c_dim" "$c_reset" \
-                "$c_dim" "$(PadRight "disabled" 8)" "$c_reset" \
+                "$c_dim" 8 "disabled" "$c_reset" \
                 "$c_dim" "$c_reset" \
                 "$label"
         fi
@@ -3090,14 +3067,14 @@ Unused() {
 
     Say info "${#unused_keys[@]} unused"
     width="$(ColumnWidth 3 "${unused_keys[@]}")"
-    printf "%b  %s  │  %s%b\n" "$c_dim" \
-        "$(PadRight "key" "$width")" \
+    printf "%b  %-*s  │  %s%b\n" "$c_dim" \
+        "$width" "key" \
         "from" "$c_reset"
     while IFS= read -r key; do
         [[ -n "$key" ]] || continue
         source="${def_from[$key]}"
-        printf "  %s  %b│%b  %s\n" \
-            "$(PadRight "$key" "$width")" \
+        printf "  %-*s  %b│%b  %s\n" \
+            "$width" "$key" \
             "$c_dim" "$c_reset" \
             "$source"
     done < <(printf '%s\n' "${unused_keys[@]}" | LC_ALL=C sort -u)
@@ -3183,8 +3160,8 @@ SkippedMounts() {
             continue
         fi
         [[ -z "$item" || "$item" == "type:"* || "$item" == "target:"* ]] && continue
-        expanded="$(ExpandComposeValue "$item")"
-        [[ -n "$expanded" ]] && item="$expanded"
+        ExpandComposeInto "$item"
+        [[ -n "$EXPANDED" ]] && item="$EXPANDED"
         if [[ "$item" == *:* ]]; then
             hostpart="$(TrimField "${item%%:*}")"
         else
@@ -3727,8 +3704,9 @@ Move() {
     while IFS= read -r name; do
         [[ -n "$name" ]] && var_names+=("$name")
     done < <(ComposeVarNames "$file")
+    LoadEnvMap "$file"
     for name in "${var_names[@]}"; do
-        line="$(LookupEnvAssignment "$name" "$file")"
+        line="${ENV_MAP_LINE[$name]:-}"
         if [[ -n "$line" ]]; then
             env_lines+=("$line")
         else
@@ -3793,7 +3771,8 @@ Move() {
         return 0
     fi
     if [[ "$archived_flag" -eq 0 ]]; then
-        run_state="$(printf '%s' "$(ReturnStatus "$folder")" | tr '[:upper:]' '[:lower:]')"
+        run_state="$(ReturnStatus "$folder")"
+        run_state="${run_state,,}"
         if [[ "$run_state" == *running* || "$run_state" == *restarting* || "$run_state" == *paused* ]]; then
             answer="$(Ask "Stop $folder before moving? [Y/n]")"
             if [[ -z "$answer" || "$answer" == [yY] ]]; then
@@ -4701,9 +4680,9 @@ CheckPorts() {
         return
     fi
     width="$(ColumnWidth 7 "${names[@]}")"
-    printf "%b  %s  │  %s%b\n" "$c_dim" "$(PadRight "service" "$width")" "ports" "$c_reset"
+    printf "%b  %-*s  │  %s%b\n" "$c_dim" "$width" "service" "ports" "$c_reset"
     while IFS= read -r name; do
-        printf "  %b%s%b  %b│%b  %s\n" "$c_teal" "$(PadRight "$name" "$width")" "$c_reset" "$c_dim" "$c_reset" "${ports[$name]}"
+        printf "  %b%-*s%b  %b│%b  %s\n" "$c_teal" "$width" "$name" "$c_reset" "$c_dim" "$c_reset" "${ports[$name]}"
     done < <(printf '%s\n' "${names[@]}" | sort)
 }
 
@@ -4748,12 +4727,6 @@ VarIsSet() {
     eval "[ \"\${${name}+x}\" = x ]"
 }
 
-VarValue() {
-    local name="$1"
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-    eval "printf '%s' \"\${${name}-}\""
-}
-
 CleanImageRef() {
     local val="$1"
     val="${val//$'\r'/}"
@@ -4775,82 +4748,55 @@ CleanImageRef() {
     printf '%s' "$val"
 }
 
-# Expand $VAR, ${VAR}, ${VAR:-default}, and ${VAR-default} from the sourced env file.
-ExpandComposeValue() {
-    local input="$1"
-    local result=""
-    local rest="$input"
-    local name default match value
+# Expand $VAR, ${VAR}, ${VAR:-default}, and ${VAR-default} from loaded env vars
+# into EXPANDED (no subshell). Locals are prefixed so env keys cannot shadow them.
+ExpandComposeInto() {
+    local _ecv_rest="$1" _ecv_out="" _ecv_name _ecv_def _ecv_match _ecv_val
 
-    while [ -n "$rest" ]; do
-        if [[ "$rest" == \$\$* ]]; then
-            result+='$'
-            rest="${rest:2}"
+    while [[ -n "$_ecv_rest" ]]; do
+        if [[ "$_ecv_rest" == \$\$* ]]; then
+            _ecv_out+='$'
+            _ecv_rest="${_ecv_rest:2}"
             continue
         fi
 
-        if [[ "$rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-)([^}]*)\} ]]; then
-            name="${BASH_REMATCH[1]}"
-            default="${BASH_REMATCH[3]}"
-            match="${BASH_REMATCH[0]}"
-            if VarIsSet "$name"; then
-                value="$(VarValue "$name")"
-                if [ -z "$value" ]; then
-                    value="$default"
-                fi
+        if [[ "$_ecv_rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-)([^}]*)\} ]]; then
+            _ecv_name="${BASH_REMATCH[1]}"
+            _ecv_def="${BASH_REMATCH[3]}"
+            _ecv_match="${BASH_REMATCH[0]}"
+            _ecv_val="${!_ecv_name-}"
+            [[ -n "$_ecv_val" ]] || _ecv_val="$_ecv_def"
+            _ecv_out+="$_ecv_val"
+            _ecv_rest="${_ecv_rest:${#_ecv_match}}"
+            continue
+        fi
+
+        if [[ "$_ecv_rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)-([^}]*)\} ]]; then
+            _ecv_name="${BASH_REMATCH[1]}"
+            _ecv_def="${BASH_REMATCH[2]}"
+            _ecv_match="${BASH_REMATCH[0]}"
+            if [[ -n "${!_ecv_name+x}" ]]; then
+                _ecv_out+="${!_ecv_name}"
             else
-                value="$default"
+                _ecv_out+="$_ecv_def"
             fi
-            result+="$value"
-            rest="${rest:${#match}}"
+            _ecv_rest="${_ecv_rest:${#_ecv_match}}"
             continue
         fi
 
-        if [[ "$rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)-([^}]*)\} ]]; then
-            name="${BASH_REMATCH[1]}"
-            default="${BASH_REMATCH[2]}"
-            match="${BASH_REMATCH[0]}"
-            if VarIsSet "$name"; then
-                value="$(VarValue "$name")"
-            else
-                value="$default"
-            fi
-            result+="$value"
-            rest="${rest:${#match}}"
+        if [[ "$_ecv_rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\} ]] || [[ "$_ecv_rest" =~ ^\$([A-Za-z_][A-Za-z0-9_]*) ]]; then
+            _ecv_name="${BASH_REMATCH[1]}"
+            _ecv_match="${BASH_REMATCH[0]}"
+            _ecv_out+="${!_ecv_name-}"
+            _ecv_rest="${_ecv_rest:${#_ecv_match}}"
             continue
         fi
 
-        if [[ "$rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\} ]]; then
-            name="${BASH_REMATCH[1]}"
-            match="${BASH_REMATCH[0]}"
-            if VarIsSet "$name"; then
-                value="$(VarValue "$name")"
-            else
-                value=""
-            fi
-            result+="$value"
-            rest="${rest:${#match}}"
-            continue
-        fi
-
-        if [[ "$rest" =~ ^\$([A-Za-z_][A-Za-z0-9_]*) ]]; then
-            name="${BASH_REMATCH[1]}"
-            match="${BASH_REMATCH[0]}"
-            if VarIsSet "$name"; then
-                value="$(VarValue "$name")"
-            else
-                value=""
-            fi
-            result+="$value"
-            rest="${rest:${#match}}"
-            continue
-        fi
-
-        result+="${rest:0:1}"
-        rest="${rest:1}"
+        _ecv_out+="${_ecv_rest:0:1}"
+        _ecv_rest="${_ecv_rest:1}"
     done
 
-    printf '%s' "$result"
+    EXPANDED="$_ecv_out"
 }
 
 ParseImageStream() {
@@ -4916,7 +4862,8 @@ GetFileImages() {
             unresolved=$((unresolved+1))
             continue
         fi
-        exp="$(ExpandComposeValue "$img")"
+        ExpandComposeInto "$img"
+        exp="$EXPANDED"
         case "$exp" in
             ""|~|null|Null|NULL) unresolved=$((unresolved+1)) ; continue ;;
         esac
@@ -5131,11 +5078,11 @@ PrintImageRow() {
     fi
     tag_color="$c_dim"
     [[ "$tag" == "-" ]] && tag_color="$c_yellow"
-    printf "  %b%s%b  %s  %b│%b  %b%s%b  %b│%b  %s\n" \
+    printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %s\n" \
         "$color" "$mark" "$c_reset" \
-        "$(PadRight "$path" "$path_w")" \
+        "$path_w" "$path" \
         "$c_dim" "$c_reset" \
-        "$tag_color" "$(PadRight "$tag" "$tag_w")" "$c_reset" \
+        "$tag_color" "$tag_w" "$tag" "$c_reset" \
         "$c_dim" "$c_reset" \
         "$img"
 }
@@ -5230,8 +5177,8 @@ ShowImages() {
         local idx
         svc_width="$(ColumnWidth 7 "${disp_path[@]}")"
         tag_width="$(ColumnWidth 3 "${disp_tag[@]}")"
-        printf "%b     %s  │  %s  │  %s%b\n" "$c_dim" \
-            "$(PadRight "service" "$svc_width")" "$(PadRight "tag" "$tag_width")" "image" "$c_reset"
+        printf "%b     %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
+            "$svc_width" "service" "$tag_width" "tag" "image" "$c_reset"
         for i in "${!disp_path[@]}"; do
             if [[ "${disp_state[$i]}" == "Enabled" ]]; then
                 en_idx+=("$i")
@@ -5901,18 +5848,20 @@ PrintBashrc() {
 }
 
 # Do the Things
-if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "bashrc" ]]; then
+action_lc="${action:-}"
+action_lc="${action_lc,,}"
+if [[ "$action_lc" == "bashrc" ]]; then
     PrintBashrc
     exit 0
 fi
 CheckEnv;
 CheckEnvVariables;
-if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "path" ]]; then
+if [[ "$action_lc" == "path" ]]; then
     Path
     exit 0
 fi
 WHERE_VAR=""
-if [[ "$(printf '%s' "${action:-}" | tr '[:upper:]' '[:lower:]')" == "where" ]]; then
+if [[ "$action_lc" == "where" ]]; then
     WHERE_VAR="${EXTRA_ARGS[0]:-}"
     if [[ -z "$WHERE_VAR" && -n "${folder:-}" && "${folder,,}" != "all" ]]; then
         WHERE_VAR="$folder"
@@ -5923,7 +5872,10 @@ if [[ "$action" == "receive" ]]; then
     Receive
     exit $?
 fi
-CheckDockerCompose;
+case "$action" in
+    help|docs|version|update|repull|key|hosts|schedule|tidy|restore|where|unused|env|envs|edit|ports|nextport|create|df|prune) ;;
+    *) CheckDockerCompose ;;
+esac
 CheckAction;
 
 exit 0
