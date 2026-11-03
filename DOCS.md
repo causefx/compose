@@ -234,6 +234,16 @@ Render the compose file(s) (`docker compose config`). Useful to verify interpola
 dc config plex
 ```
 
+### cmd
+
+Print a shell-quoted `docker compose` (or `docker-compose`) line for a service: `--file`, every `--env-file` (project then service folder, same chain as a real run), then `up -d`. Works for enabled or disabled (and archived) compose files. stdout is only that line so you can copy or pipe it. Pass extra args after `--` to replace `up -d`.
+
+```bash
+dc cmd plex
+dc cmd plex -- down
+dc cmd plex -- config
+```
+
 ### ports
 
 Show `*_PORT_*` keys from the project `.env` and every service-folder env file, grouped by service prefix.

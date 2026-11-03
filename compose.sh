@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.8.0
-### ChangeNotes: versioning is major.feature.fix; rename asks before env keys.
+VERSION=v1.9.0
+### ChangeNotes: cmd prints docker compose up with env files.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -141,6 +141,7 @@ stats|Show CPU, memory, and network|stats
 images|List compose images and tags|images
 pull|Pull images and skip ones already current|pull
 config|Render compose file(s)|compose|config
+cmd|Print docker compose up with env files|cmd
 ports|Show ports from all env files|ports
 nextport|Show the next free host port|nextport
 df|Show Docker disk usage|df
@@ -439,6 +440,7 @@ CheckAction() {
                 ;;
             ports) CheckPorts ;;
             nextport) NextPort ;;
+            cmd) Cmd ;;
             edit) EditFile "$folder" ;;
             env) EditEnv ;;
             envs) Envs ;;
@@ -1676,6 +1678,45 @@ RunOneCompose() {
     local -a args=(--file "$file")
     AppendEnvFileArgs args "$file"
     "${DockerCmd[@]}" "${args[@]}" "$@"
+}
+
+Cmd() {
+    local name resolved root compose_file part first=1
+    local -a args=() run=()
+
+    name="${folder:-}"
+    if ! ValidServiceName "$name"; then
+        Say baderr "cmd needs a service name."
+        Say baderr "dc cmd plex"
+        exit 1
+    fi
+    if ! resolved="$(ResolveServiceRoot "$name")"; then
+        Say baderr "Service does not exist."
+        exit 1
+    fi
+    root="${resolved%%|*}"
+    if ! compose_file="$(ServiceComposeFile "$root")"; then
+        Say baderr "Service does not exist."
+        exit 1
+    fi
+
+    args=(--file "$compose_file")
+    AppendEnvFileArgs args "$compose_file"
+    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+        run=("${EXTRA_ARGS[@]}")
+    else
+        run=(up -d)
+    fi
+
+    for part in "${DockerCmd[@]}" "${args[@]}" "${run[@]}"; do
+        if [[ "$first" -eq 1 ]]; then
+            printf '%q' "$part"
+            first=0
+        else
+            printf ' %q' "$part"
+        fi
+    done
+    printf '\n'
 }
 
 RunComposeBrief() {
