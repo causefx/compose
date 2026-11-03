@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.10.0 unused lists env keys no service references
 ### 1.9.0 cmd prints docker compose up with env files
 ### 1.8.0 versioning is major.feature.fix; rename asks before env keys
 ### 1.7.66 add appends another app to a service compose file

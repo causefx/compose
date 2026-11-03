@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.9.0
-### ChangeNotes: cmd prints docker compose up with env files.
+VERSION=v1.10.0
+### ChangeNotes: unused lists env keys no service references.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -161,6 +161,7 @@ edit|Edit service|edit
 env|Edit project or service env file|env
 envs|List or fill env vars for a service|envs
 where|Show where an env var is used|where
+unused|List unused env vars|unused
 tidy|Organize the env file and sort ports|tidy
 restore|Restore .env from the tidy backup|restore
 # @group Script
@@ -445,6 +446,7 @@ CheckAction() {
             env) EditEnv ;;
             envs) Envs ;;
             where) Where ;;
+            unused) Unused ;;
             tidy) TidyEnv ;;
             restore) RestoreEnv ;;
             bashrc) PrintBashrc ;;
@@ -2881,6 +2883,107 @@ Where() {
                 "$label"
         fi
     done < <(printf '%s\n' "${rows[@]}" | LC_ALL=C sort -t '|' -k1,1)
+}
+
+IsScriptSettingKey() {
+    case "$1" in
+        APPS|ARCHIVE|COMPOSE_FILE|COMPOSE_FILE_DISABLED|STUB_FILE|STARTING_PORT) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+EnvFileKeys() {
+    local file="$1" line key
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
+        key="${BASH_REMATCH[1]}"
+        IsScriptSettingKey "$key" && continue
+        printf '%s\n' "$key"
+    done < "$file"
+}
+
+VarReferencedByAnyService() {
+    local want="$1" dir compose_file
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        if [[ -f "$dir/$COMPOSE_FILE" ]]; then
+            compose_file="$dir/$COMPOSE_FILE"
+        elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
+            compose_file="$dir/$COMPOSE_FILE_DISABLED"
+        else
+            continue
+        fi
+        ComposeUsesVar "$compose_file" "$want" && return 0
+        ServiceEnvUsesVar "$compose_file" "$want" && return 0
+    done < <(ServiceDirs)
+    return 1
+}
+
+Unused() {
+    local dir f key name source width
+    local -A def_from=()
+    local -a unused_keys=()
+
+    Banner "unused"
+
+    AddUnusedDef() {
+        local k="$1" src="$2"
+        IsScriptSettingKey "$k" && return 0
+        if [[ -z "${def_from[$k]+x}" ]]; then
+            def_from["$k"]="$src"
+            return 0
+        fi
+        case ", ${def_from[$k]}, " in
+            *", $src, "*) ;;
+            *) def_from["$k"]="${def_from[$k]}, $src" ;;
+        esac
+    }
+
+    if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
+        while IFS= read -r key; do
+            [[ -n "$key" ]] || continue
+            AddUnusedDef "$key" "shared"
+        done < <(EnvFileKeys "$envFile")
+    fi
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        name="$(basename "$dir")"
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            while IFS= read -r key; do
+                [[ -n "$key" ]] || continue
+                AddUnusedDef "$key" "$name"
+            done < <(EnvFileKeys "$f")
+        done < <(EnvFilesInDir "$dir")
+    done < <(ServiceDirs)
+
+    for key in "${!def_from[@]}"; do
+        VarReferencedByAnyService "$key" && continue
+        unused_keys+=("$key")
+    done
+
+    if [[ ${#unused_keys[@]} -eq 0 ]]; then
+        Say info "No unused env vars."
+        return 0
+    fi
+
+    Say info "${#unused_keys[@]} unused"
+    width="$(ColumnWidth 3 "${unused_keys[@]}")"
+    printf "%b  %s  │  %s%b\n" "$c_dim" \
+        "$(PadRight "key" "$width")" \
+        "from" "$c_reset"
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        source="${def_from[$key]}"
+        printf "  %s  %b│%b  %s\n" \
+            "$(PadRight "$key" "$width")" \
+            "$c_dim" "$c_reset" \
+            "$source"
+    done < <(printf '%s\n' "${unused_keys[@]}" | LC_ALL=C sort -u)
 }
 
 TrimField() {

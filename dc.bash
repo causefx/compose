@@ -7,7 +7,7 @@ dc() {
     shift || true
     local service=""
     local -a extra=()
-    if [[ "$action" != "key" && "$action" != "nextport" && "$action" != "schedule" && "$action" != "docs" && "$action" != "where" && $# -gt 0 && "$1" != -* ]]; then
+    if [[ "$action" != "key" && "$action" != "nextport" && "$action" != "schedule" && "$action" != "docs" && "$action" != "where" && "$action" != "unused" && $# -gt 0 && "$1" != -* ]]; then
         service="$1"
         shift
     fi
@@ -116,7 +116,7 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "$opts_arch" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && ( "${COMP_WORDS[1]}" == "move" || "${COMP_WORDS[1]}" == "rename" ) ]]; then
         COMPREPLY=( $(compgen -W "$opts_s ${opts_arch#all }" -- "$cur") )
-    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" ]]; then
+    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" && "${COMP_WORDS[1]}" != "unused" ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "move" ]]; then
         opts_hosts="$(_dc_compose_hosts)"

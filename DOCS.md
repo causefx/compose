@@ -29,7 +29,7 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 
 ### Service name
 
-Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `where`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
+Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `where`, `unused`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
 
 ### Marks
 
@@ -408,6 +408,14 @@ Show which services reference an env var. Scans every service’s compose file a
 ```bash
 dc where MEDIA
 dc where PUID
+```
+
+### unused
+
+List env keys that are assigned but not referenced by any service (same scan as `where`: compose files and service env values). Reads definitions from the project `.env` and every service-folder env file. Skips script settings (`APPS`, `ARCHIVE`, `COMPOSE_FILE`, `COMPOSE_FILE_DISABLED`, `STUB_FILE`, `STARTING_PORT`). Table columns: **key** and **from** (`shared`, a service name, or both). Sorted by key A–Z.
+
+```bash
+dc unused
 ```
 
 ### tidy
