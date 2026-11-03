@@ -23,13 +23,13 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 - **Disabled** — compose file renamed to `COMPOSE_FILE_DISABLED`
 - **Archived** — disabled service folder moved under `ARCHIVE` (default `APPS/.archive/`); hidden from normal run/list loops until unarchived
 - **Stub** — `STUB_FILE` template used by `create` (usually the repo `docker-compose.yml`)
-- **Env** — project `.env` next to `compose.sh` (never overwritten by update)
+- **Env** — project `.env` next to `compose.sh` (never overwritten by update). Read with a parser, not `source`, so values are never run as shell code. Unquoted and double-quoted values expand `$VAR` / `${VAR}` like Compose; single-quoted values stay literal.
 - **Backups** — tidy and non-git update copies go under `.backup/` next to the file (for example `.backup/.env.bak`, `.backup/compose.sh.bak`). Legacy `*.bak` beside the file still works for `restore`.
 - **Service env files** — any `.env`, `.env.*`, or `*.env` in a service folder is also passed to Compose (after the project `.env`). Later files can override earlier keys. Skips `*.bak`, `*.example`, and `*.sample`.
 
 ### Service name
 
-Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `where`, `unused`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
+Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. With no name, `down`, `stop`, and `restart` default to **no** (`[y/N]`); other loops default to yes. Some commands never take a service: `key`, `nextport`, `schedule`, `docs`, `where`, `unused`, `bashrc`, `hosts`, `path`, `tidy`, `restore`, `df`, `prune`, `version`, `update`, `repull`, `help`.
 
 ### Marks
 
@@ -273,8 +273,8 @@ dc df
 
 Host-wide cleanup. Shows `docker system df`, then asks twice (Enter = no):
 
-1. `docker system prune -a -f` and builder prune
-2. `docker volume prune -f` (volumes still attached to any container, including stopped ones, stay)
+1. `docker system prune -a -f` (includes build cache)
+2. `docker volume prune -f`. On Docker 23+ this removes only unused **anonymous** volumes; named volumes stay. Older Docker removes every unused volume, named ones too. The prompt says which applies. Volumes attached to any container, including stopped ones, always stay.
 
 Shows df again if something was removed.
 
@@ -296,7 +296,7 @@ dc enable plex
 
 ### disable
 
-Rename the enabled compose file to the disabled name.
+Rename the enabled compose file to the disabled name. If the service is running, asks to stop and remove it first; answering no leaves it enabled so `dc` can still manage those containers.
 
 ```bash
 dc disable plex
@@ -324,7 +324,7 @@ dc unarchive all
 
 ### create
 
-Create a new service folder from the stub. Asks for the service name (if missing) and image. Writes a **disabled** compose file with `{{SERVICE}}` and `{{IMAGE}}` replaced. Edit it, then `dc enable` / `dc up`.
+Create a new service folder from the stub. Asks for the service name (if missing) and image. Writes a **disabled** compose file with `{{SERVICE}}` and `{{IMAGE}}` replaced. Service names use letters, numbers, dot, dash, or underscore; image refs use letters, numbers, and `. _ / : @ -`. Edit it, then `dc enable` / `dc up`.
 
 ```bash
 dc create
@@ -412,9 +412,16 @@ dc where PUID
 
 ### unused
 
-List env keys that are assigned but not referenced by any service (same meaning as `where`: compose `${VAR}` / `$VAR` and nested refs in service env values). Loads defined keys first, then walks each compose (and its service env files) once to build the referenced set; unused is defined minus referenced. Skips script settings (`APPS`, `ARCHIVE`, `COMPOSE_FILE`, `COMPOSE_FILE_DISABLED`, `STUB_FILE`, `STARTING_PORT`). Table columns: **key** and **from** (`shared`, a service name, or both). Sorted by key A–Z. Shows a spinner on the terminal while scanning.
+List env keys that are assigned but not referenced by any service: compose `${VAR}` / `$VAR`, plus nested refs inside env values (project `.env` and service env files). Scans enabled, disabled, **and archived** services. Loads defined keys first, then walks each compose once to build the referenced set; unused is defined minus referenced.
 
-After the table, asks whether to remove those keys from the files that define them (`[y/N]`, default no).
+Never flagged:
+
+- Script settings: `APPS`, `ARCHIVE`, `COMPOSE_FILE`, `COMPOSE_FILE_DISABLED`, `STUB_FILE`, `STARTING_PORT`
+- Keys Compose or the Docker CLI read from the environment: any `COMPOSE_*` (for example `COMPOSE_HTTP_TIMEOUT`, `COMPOSE_VERSION`), `DOCKER_CLIENT_TIMEOUT`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_BUILDKIT`, `DOCKER_DEFAULT_PLATFORM`, `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`
+
+Table columns: **key** and **from** (`shared`, a service name, or both). Sorted by key A–Z. Shows a spinner on the terminal while scanning.
+
+After the table, asks whether to remove those keys (`[y/N]`, default no). On yes, each file it will edit is first copied to `.backup/<name>.bak`; if a backup fails, nothing is removed. `dc restore` puts the project `.env` back from that backup.
 
 ```bash
 dc unused

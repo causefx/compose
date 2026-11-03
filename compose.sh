@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.11.2
-### ChangeNotes: unused scans compose refs in one pass.
+VERSION=v1.11.3
+### ChangeNotes: safer env load, unused, disable, create, prune, and exit codes.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -250,11 +250,10 @@ CheckEnv() {
 
     if [ ! -f "$envFile" ]; then
         Say bad "Env file does not exist: $envFile"
-        exit
+        exit 1
     fi
 
-    # shellcheck disable=SC1090
-    source "$envFile"
+    ApplyEnvFileToShell "$envFile"
 }
 
 RequireVar() {
@@ -365,7 +364,7 @@ ReturnStatus() {
 CheckFolderSupplied() {
     if [ -z "$1" ]; then
         Say bad "Service name not supplied."
-        exit
+        exit 1
     fi
 }
 
@@ -780,31 +779,44 @@ List() {
 Toggle() {
     local action="$1"
     local folder="$2"
-    local file fileName newFileName removeAnswer
+    local fileName newFileName removeAnswer
     CheckFolderSupplied "$folder"
-    fileName=$( [ "$action" == "enable" ] && echo "$COMPOSE_FILE_DISABLED" || echo "$COMPOSE_FILE" )
-    newFileName=$( [ "$action" == "enable" ] && echo "$COMPOSE_FILE" || echo "$COMPOSE_FILE_DISABLED" )
-
-    for file in "$APPS/$folder"/*; do
-        if [ -f "$file" ] && [ "${file##*/}" == $fileName ]; then
-            if [ $newFileName == $COMPOSE_FILE_DISABLED ]; then
-                if CheckStatus $folder; then
-                    removeAnswer="$(Ask "Service is running. Stop and remove it? [y/N]")"
-                    if [[ "$removeAnswer" == [yY] ]]; then
-                        Say warn "Stopping and removing containers."
-                        RunOneCompose "$APPS/$folder/$COMPOSE_FILE" down
-                        Say ok "Service removed."
-                    else
-                        Say info "Keeping service."
-                    fi
-                fi
-            fi
-            mv "$file" "$APPS/$folder/$newFileName"
-        fi
-    done
-    if [ ! -f "$APPS/$folder/$COMPOSE_FILE" ] && [ ! -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]; then
+    if ! ValidServiceName "$folder"; then
+        Say bad "Invalid service name."
+        exit 1
+    fi
+    if [[ "$action" == "enable" ]]; then
+        fileName="$COMPOSE_FILE_DISABLED"
+        newFileName="$COMPOSE_FILE"
+    else
+        fileName="$COMPOSE_FILE"
+        newFileName="$COMPOSE_FILE_DISABLED"
+    fi
+    if [[ ! -f "$APPS/$folder/$COMPOSE_FILE" && ! -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
         Say bad "Service does not exist."
-    elif [ "$action" = "enable" ]; then
+        exit 1
+    fi
+
+    if [[ -f "$APPS/$folder/$fileName" ]]; then
+        if [[ "$action" == "disable" ]] && CheckStatus "$folder"; then
+            removeAnswer="$(Ask "Service is running. Stop and remove it? [y/N]")"
+            if [[ "$removeAnswer" != [yY] ]]; then
+                Say info "Left $folder enabled so dc can still manage its containers."
+                return 0
+            fi
+            Say warn "Stopping and removing containers."
+            if ! RunOneCompose "$APPS/$folder/$COMPOSE_FILE" down; then
+                Say bad "Could not stop $folder. Left it enabled."
+                exit 1
+            fi
+            Say ok "Service removed."
+        fi
+        if ! mv -- "$APPS/$folder/$fileName" "$APPS/$folder/$newFileName"; then
+            Say bad "Could not rename the compose file."
+            exit 1
+        fi
+    fi
+    if [[ "$action" == "enable" ]]; then
         Say ok "Service enabled."
     else
         Say warn "Service disabled."
@@ -1121,7 +1133,7 @@ ServiceComposeFile() {
 
 Remove() {
     local name="$1"
-    local target compose_file=""
+    local target compose_file="" removeAnswer removeAnswerConfirm
 
     CheckFolderSupplied "$name"
     if ! target="$(ServiceDir "$name")"; then
@@ -1804,7 +1816,7 @@ RunServices() {
     shift
     local verb="${1:-}"
     local pretty=0
-    local dir path failed=0 ran=0
+    local dir path failed=0 ran=0 answer
     local -a names=()
     local index=0 unchanged=0 changed=0 failed_color name_width=16
     case "$verb" in
@@ -1813,11 +1825,22 @@ RunServices() {
 
     if [[ -z "$service" || "$service" == "all" ]]; then
         if [[ -z "$service" ]]; then
-            answer="$(Ask "No service was provided. Loop through all services? [Y/n]")"
-            if [[ -n "$answer" && "$answer" != [yY] ]]; then
-                Say info "Exiting."
-                return
-            fi
+            case "$verb" in
+                down|stop|restart)
+                    answer="$(Ask "No service was provided. $verb every service? [y/N]")"
+                    if [[ "$answer" != [yY] ]]; then
+                        Say info "Exiting."
+                        return
+                    fi
+                    ;;
+                *)
+                    answer="$(Ask "No service was provided. Loop through all services? [Y/n]")"
+                    if [[ -n "$answer" && "$answer" != [yY] ]]; then
+                        Say info "Exiting."
+                        return
+                    fi
+                    ;;
+            esac
         fi
         while IFS= read -r dir; do
             [[ -f "${dir}${COMPOSE_FILE}" ]] || continue
@@ -1870,7 +1893,6 @@ RunServices() {
         return
     fi
     if [[ -f "$APPS/$service/$COMPOSE_FILE_DISABLED" ]]; then
-        local answer
         Say warn "Service is disabled."
         case "$verb" in
             up|start|restart|build)
@@ -2415,7 +2437,7 @@ Disk() {
 }
 
 Prune() {
-    local answer tried=0 did=0
+    local answer tried=0 did=0 volume_prompt
     Banner "prune"
     Say info "This cleans the whole Docker host."
     if ! docker system df; then
@@ -2429,15 +2451,16 @@ Prune() {
         if docker system prune -a -f; then
             did=1
         else
-            Say bad "Image prune failed."
-        fi
-        if docker builder prune -a -f; then
-            did=1
-        else
-            Say warn "Build cache was left in place."
+            Say bad "System prune failed."
         fi
     fi
-    answer="$(Ask "Remove unused volumes? Volumes not attached to a container are deleted. [y/N]")"
+    # Docker 23+ prunes only anonymous volumes unless --all is passed.
+    if docker volume prune --help 2>/dev/null | grep -q -- '--all'; then
+        volume_prompt="Remove unused anonymous volumes? Named volumes are kept. [y/N]"
+    else
+        volume_prompt="Remove unused volumes? Every volume not attached to a container is deleted, named ones too. [y/N]"
+    fi
+    answer="$(Ask "$volume_prompt")"
     if [[ "$answer" == [yY] ]]; then
         tried=1
         if docker volume prune -f; then
@@ -2561,36 +2584,38 @@ LookupEnvAssignment() {
     [[ -n "$found" ]] && printf '%s\n' "$found"
 }
 
-# Load project then service env files into the shell (last wins).
+# Parse one env file into shell variables without executing it.
 # Unquoted and double-quoted values expand like Compose; single-quoted stay literal.
+ApplyEnvFileToShell() {
+    local f="$1"
+    local line key raw val
+    [[ -f "$f" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        line="${line#export }"
+        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"
+        raw="${BASH_REMATCH[2]}"
+        if [[ "$raw" == \'*\' ]]; then
+            val="${raw:1:${#raw}-2}"
+        elif [[ "$raw" == \"*\" ]]; then
+            val="$(ExpandComposeValue "${raw:1:${#raw}-2}")"
+        else
+            raw="${raw#"${raw%%[![:space:]]*}"}"
+            raw="${raw%"${raw##*[![:space:]]}"}"
+            val="$(ExpandComposeValue "$raw")"
+        fi
+        printf -v "$key" '%s' "$val"
+    done < "$f"
+}
+
+# Load project then service env files into the shell (last wins).
 ApplyEnvFilesForService() {
     local compose_file="$1"
     local file
-
-    ApplyEnvFileToShell() {
-        local f="$1"
-        local line key raw val
-        [[ -f "$f" ]] || return 0
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            line="${line//$'\r'/}"
-            line="${line#"${line%%[![:space:]]*}"}"
-            line="${line%"${line##*[![:space:]]}"}"
-            [[ -z "$line" || "$line" == \#* ]] && continue
-            [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-            key="${BASH_REMATCH[1]}"
-            raw="${BASH_REMATCH[2]}"
-            if [[ "$raw" == \'*\' ]]; then
-                val="${raw:1:${#raw}-2}"
-            elif [[ "$raw" == \"*\" ]]; then
-                val="$(ExpandComposeValue "${raw:1:${#raw}-2}")"
-            else
-                raw="${raw#"${raw%%[![:space:]]*}"}"
-                raw="${raw%"${raw##*[![:space:]]}"}"
-                val="$(ExpandComposeValue "$raw")"
-            fi
-            printf -v "$key" '%s' "$val"
-        done < "$f"
-    }
 
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
         ApplyEnvFileToShell "$envFile"
@@ -2937,6 +2962,14 @@ IsScriptSettingKey() {
     esac
 }
 
+# Compose and the Docker CLI read these from the environment, never via ${}.
+IsRuntimeEnvKey() {
+    case "$1" in
+        COMPOSE_*|DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG|DOCKER_CLIENT_TIMEOUT|DOCKER_BUILDKIT|DOCKER_DEFAULT_PLATFORM|DOCKER_TLS_VERIFY|DOCKER_CERT_PATH) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 EnvFileKeys() {
     local file="$1" line key
     [[ -f "$file" ]] || return 0
@@ -2944,20 +2977,23 @@ EnvFileKeys() {
         line="${line//$'\r'/}"
         line="${line#"${line%%[![:space:]]*}"}"
         [[ -z "$line" || "$line" == \#* ]] && continue
+        line="${line#export }"
         [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
         key="${BASH_REMATCH[1]}"
         IsScriptSettingKey "$key" && continue
+        IsRuntimeEnvKey "$key" && continue
         printf '%s\n' "$key"
     done < "$file"
 }
 
 Unused() {
-    local dir f key name source width answer removed=0 compose_file
+    local dir f key name source width answer removed=0 compose_file backup
     local spin='|/-\' tick=0
     local -A def_from=()
     local -A def_files=()
     local -A referenced=()
-    local -a unused_keys=()
+    local -A touched=()
+    local -a unused_keys=() all_dirs=()
 
     Banner "unused"
 
@@ -2975,6 +3011,7 @@ Unused() {
     AddUnusedDef() {
         local k="$1" src="$2" file="$3"
         IsScriptSettingKey "$k" && return 0
+        IsRuntimeEnvKey "$k" && return 0
         if [[ -z "${def_from[$k]+x}" ]]; then
             def_from["$k"]="$src"
         else
@@ -2996,15 +3033,21 @@ Unused() {
         referenced["$n"]=1
     }
 
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] && all_dirs+=("$dir")
+    done < <(ServiceDirs; ArchivedServiceDirs)
+
     UnusedSpin "Reading env files"
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
         while IFS= read -r key; do
             [[ -n "$key" ]] || continue
             AddUnusedDef "$key" "shared" "$envFile"
         done < <(EnvFileKeys "$envFile")
+        while IFS= read -r key; do
+            MarkReferenced "$key"
+        done < <(EnvFileRefNames "$envFile")
     fi
-    while IFS= read -r dir; do
-        [[ -n "$dir" ]] || continue
+    for dir in "${all_dirs[@]}"; do
         name="$(basename "$dir")"
         UnusedSpin "Reading $name"
         while IFS= read -r f; do
@@ -3013,11 +3056,13 @@ Unused() {
                 [[ -n "$key" ]] || continue
                 AddUnusedDef "$key" "$name" "$f"
             done < <(EnvFileKeys "$f")
+            while IFS= read -r key; do
+                MarkReferenced "$key"
+            done < <(EnvFileRefNames "$f")
         done < <(EnvFilesInDir "$dir")
-    done < <(ServiceDirs)
+    done
 
-    while IFS= read -r dir; do
-        [[ -n "$dir" ]] || continue
+    for dir in "${all_dirs[@]}"; do
         name="$(basename "$dir")"
         if [[ -f "$dir/$COMPOSE_FILE" ]]; then
             compose_file="$dir/$COMPOSE_FILE"
@@ -3030,13 +3075,7 @@ Unused() {
         while IFS= read -r key; do
             MarkReferenced "$key"
         done < <(ComposeVarNames "$compose_file")
-        while IFS= read -r f; do
-            [[ -n "$f" ]] || continue
-            while IFS= read -r key; do
-                MarkReferenced "$key"
-            done < <(EnvFileRefNames "$f")
-        done < <(ServiceEnvFiles "$compose_file")
-    done < <(ServiceDirs)
+    done
 
     for key in "${!def_from[@]}"; do
         [[ -n "${referenced[$key]+x}" ]] && continue
@@ -3069,11 +3108,27 @@ Unused() {
         return 0
     fi
 
+    for key in "${unused_keys[@]}"; do
+        while IFS= read -r f; do
+            [[ -n "$f" ]] && touched["$f"]=1
+        done < <(printf '%s\n' "${def_files[$key]}")
+    done
+    for f in "${!touched[@]}"; do
+        if ! backup="$(BackupPathFor "$f")" || ! cp -p -- "$f" "$backup"; then
+            Say bad "Could not back up $f. Nothing removed."
+            exit 1
+        fi
+        Say info "Backup: $backup"
+    done
+
     while IFS= read -r key; do
         [[ -n "$key" ]] || continue
         while IFS= read -r f; do
             [[ -n "$f" ]] || continue
-            RemoveEnvKeyInFile "$f" "$key"
+            RemoveEnvKeyInFile "$f" "$key" || {
+                Say bad "Could not update $f."
+                exit 1
+            }
         done < <(printf '%s\n' "${def_files[$key]}")
         removed=$((removed + 1))
     done < <(printf '%s\n' "${unused_keys[@]}" | LC_ALL=C sort -u)
@@ -4121,35 +4176,47 @@ OpenEditor() {
 
 
 Create() {
+    local image content target
     if ! CheckFolderSuppliedNoExit "$1"; then
         folder="$(Ask "What should we name the service:")"
         folder="${folder,,}"
     fi
-    
+    if ! ValidServiceName "$folder"; then
+        Say bad "Invalid service name."
+        Say info "Use letters, numbers, dot, dash, or underscore."
+        exit 1
+    fi
 
     if [ ! -f "$STUB_FILE" ]; then
         Say bad "Stub file does not exist: $STUB_FILE"
-        exit
+        exit 1
     fi
 
-    if [ -d "$APPS/$folder" ]; then
+    if [ -e "$APPS/$folder" ] || [ -e "$(ArchiveDir)/$folder" ]; then
         Say warn "Service already exists: $folder"
-        exit
+        exit 1
     fi
 
     image="$(Ask "Enter the container image:")"
     if [ -z "$image" ]; then
         Say bad "Image not supplied."
-        exit
+        exit 1
+    fi
+    if [[ ! "$image" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
+        Say bad "Image name has unsupported characters."
+        exit 1
     fi
 
-    mkdir -p "$APPS/$folder"
-    cp "$STUB_FILE" "$APPS/$folder/$COMPOSE_FILE_DISABLED"
-    sed -i -e "s|{{SERVICE}}|$folder|g" -e "s|{{IMAGE}}|$image|g" "$APPS/$folder/$COMPOSE_FILE_DISABLED"
+    content="$(<"$STUB_FILE")"
+    content="${content//"{{SERVICE}}"/"$folder"}"
+    content="${content//"{{IMAGE}}"/"$image"}"
+    target="$APPS/$folder/$COMPOSE_FILE_DISABLED"
+    if ! mkdir -p "$APPS/$folder" || ! printf '%s\n' "$content" >"$target"; then
+        Say bad "Could not create $folder."
+        exit 1
+    fi
     Say ok "Service created: $folder"
     Say warn "Disabled until you edit the compose file."
-    
-    exit
 }
 
 # Compose service keys already in the file (best-effort).
@@ -4216,6 +4283,10 @@ Add() {
     image="$(Ask "Container image:")"
     if [[ -z "$image" ]]; then
         Say bad "Image not supplied."
+        exit 1
+    fi
+    if [[ ! "$image" =~ ^[A-Za-z0-9._/:@-]+$ ]]; then
+        Say bad "Image name has unsupported characters."
         exit 1
     fi
 
