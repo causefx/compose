@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v2.0.0
-### ChangeNotes: update, tidy --undo, images --pull, host, and setup replace old actions.
+VERSION=v2.0.1
+### ChangeNotes: .env inline comments, old action names, and env keys no longer override the script.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -16,6 +16,14 @@ DockerCmd=()
 declare -A PROJECT_STATUS=()
 PROJECT_STATUS_LOADED=0
 declare -a CTR_SVC=() CTR_NAME=() CTR_STATUS=() CTR_PORTS=()
+# Env file values live in ENV_VAL, not shell variables, so a key like VERSION
+# cannot overwrite script state. SHELL_ENV is the exported environment at start,
+# the fallback for ${VAR} expansion.
+declare -A ENV_VAL=() SHELL_ENV=()
+while IFS= read -r _env_name; do
+    SHELL_ENV["$_env_name"]="${!_env_name}"
+done < <(compgen -e)
+unset _env_name
 
 ### Colors:
 c_red="\033[0;31m"
@@ -165,6 +173,8 @@ docs||Docs|||Show command documentation
 help||Help|||This help menu
 path|h|Path|||Print script and APPS paths
 version|h|UpdateScript|--check||Display version
+pull|hsd|ShowImages|pull||Old name for images --pull
+hosts|h|Hosts|||Old name for host list
 # @end
 EOF
 }
@@ -280,7 +290,7 @@ CheckEnv() {
         exit 1
     fi
 
-    ApplyEnvFileToShell "$envFile"
+    LoadEnvValues "$envFile" settings
 }
 
 RequireVar() {
@@ -407,11 +417,17 @@ CheckFolderSuppliedNoExit() {
 
 # Action Functions
 CheckAction() {
+    local renamed
     if [[ -z "${action:-}" ]]; then
         Say bad "Invalid option. Run compose.sh -h for available actions."
         exit 1
     fi
     if ! ActionLookup "$action"; then
+        if renamed="$(ActionRenamed "$action")"; then
+            Say bad "$action is now $renamed."
+            Say info "dc $renamed"
+            exit 1
+        fi
         Say bad "Invalid option. Run compose.sh -h for available actions."
         Help
         exit 1
@@ -419,6 +435,10 @@ CheckAction() {
     if ! declare -F "$ACT_FN" >/dev/null; then
         Say bad "Unknown handler: $ACT_FN"
         exit 1
+    fi
+    # Hidden old names (pull, hosts, version) still run so existing cron jobs keep working.
+    if [[ "$ACT_FLAGS" == *h* ]] && renamed="$(ActionRenamed "$action")"; then
+        Say warn "$action is now $renamed. The old name still works for now."
     fi
     # Older dc.bash passed the first word as -s for actions that take none.
     if [[ "$ACT_FLAGS" != *s* && -n "${folder:-}" && " $ACT_OPTS " == *" $folder "* ]]; then
@@ -2506,13 +2526,14 @@ ValidServiceName() {
     [[ "$name" =~ ^[A-Za-z0-9._-]+$ ]]
 }
 
-# Unique ${VAR} / $VAR names in a compose file, one awk pass.
-ComposeVarNames() {
-    local file="$1"
-    [[ -f "$file" ]] || return 0
+# Unique ${VAR} / $VAR names in compose text on stdin, one awk pass.
+# Skips $$ (an escaped $) and full-line # comments.
+ComposeVarNamesStdin() {
     awk '
+        /^[[:space:]]*#/ { next }
         {
             s = $0
+            gsub(/[$][$]/, "", s)
             while (match(s, /[$][{]?[A-Za-z_][A-Za-z0-9_]*/)) {
                 n = substr(s, RSTART, RLENGTH)
                 s = substr(s, RSTART + RLENGTH)
@@ -2520,7 +2541,14 @@ ComposeVarNames() {
                 if (!(n in seen)) { seen[n] = 1; print n }
             }
         }
-    ' "$file"
+    '
+}
+
+# Unique ${VAR} / $VAR names in a compose file.
+ComposeVarNames() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    ComposeVarNamesStdin < "$file"
 }
 
 declare -A ENV_MAP_SRC=() ENV_MAP_LINE=()
@@ -2551,46 +2579,91 @@ LoadEnvMap() {
     done < <(ServiceEnvFiles "$compose_file")
 }
 
-# Parse one env file into shell variables without executing it.
-# Unquoted and double-quoted values expand like Compose; single-quoted stay literal.
-ApplyEnvFileToShell() {
-    local _aef_file="$1" _aef_line _aef_key _aef_raw _aef_val
-    [[ -f "$_aef_file" ]] || return 0
-    while IFS= read -r _aef_line || [[ -n "$_aef_line" ]]; do
-        _aef_line="${_aef_line//$'\r'/}"
-        _aef_line="${_aef_line#"${_aef_line%%[![:space:]]*}"}"
-        _aef_line="${_aef_line%"${_aef_line##*[![:space:]]}"}"
-        [[ -z "$_aef_line" || "$_aef_line" == \#* ]] && continue
-        _aef_line="${_aef_line#export }"
-        [[ "$_aef_line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
-        _aef_key="${BASH_REMATCH[1]}"
-        _aef_raw="${BASH_REMATCH[2]}"
-        if [[ "$_aef_raw" == \'*\' ]]; then
-            _aef_val="${_aef_raw:1:${#_aef_raw}-2}"
-        elif [[ "$_aef_raw" == \"*\" ]]; then
-            ExpandComposeInto "${_aef_raw:1:${#_aef_raw}-2}"
-            _aef_val="$EXPANDED"
-        else
-            _aef_raw="${_aef_raw#"${_aef_raw%%[![:space:]]*}"}"
-            _aef_raw="${_aef_raw%"${_aef_raw##*[![:space:]]}"}"
-            ExpandComposeInto "$_aef_raw"
-            _aef_val="$EXPANDED"
-        fi
-        printf -v "$_aef_key" '%s' "$_aef_val"
-    done < "$_aef_file"
+# Split a raw env value the way Compose reads it (no subshell). Sets ENV_RAW_QUOTE
+# to ' or " or empty, and ENV_RAW_TEXT to the value without its quotes. Text after
+# the closing quote, or after whitespace + # on an unquoted value, is a comment.
+EnvRawValue() {
+    local raw="$1" rest i
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    ENV_RAW_QUOTE=""
+    case "$raw" in
+        \'*\'*)
+            rest="${raw:1}"
+            ENV_RAW_QUOTE="'"
+            ENV_RAW_TEXT="${rest%%\'*}"
+            return 0
+            ;;
+        \"*\"*)
+            rest="${raw:1}"
+            for ((i = 0; i < ${#rest}; i++)); do
+                [[ "${rest:i:1}" == '"' ]] && break
+                [[ "${rest:i:1}" == '\' ]] && i=$((i + 1))
+            done
+            ENV_RAW_QUOTE='"'
+            ENV_RAW_TEXT="${rest:0:i}"
+            ENV_RAW_TEXT="${ENV_RAW_TEXT//\\\"/\"}"
+            return 0
+            ;;
+    esac
+    if [[ "$raw" =~ [[:space:]]# ]]; then
+        raw="${raw%%"${BASH_REMATCH[0]}"*}"
+    fi
+    ENV_RAW_TEXT="${raw%"${raw##*[![:space:]]}"}"
 }
 
-# Load project then service env files into the shell (last wins).
-ApplyEnvFilesForService() {
+# EnvGet <name>: sets ENV_GOT from loaded env files, else the exported shell
+# environment. Exit 1 when neither has it.
+EnvGet() {
+    if [[ -n "${ENV_VAL[$1]+x}" ]]; then
+        ENV_GOT="${ENV_VAL[$1]}"
+        return 0
+    fi
+    if [[ -n "${SHELL_ENV[$1]+x}" ]]; then
+        ENV_GOT="${SHELL_ENV[$1]}"
+        return 0
+    fi
+    ENV_GOT=""
+    return 1
+}
+
+# Parse one env file into ENV_VAL without executing it (last assignment wins).
+# Unquoted and double-quoted values expand like Compose; single-quoted stay literal.
+# With "settings", script setting keys (APPS, COMPOSE_FILE, ...) also become shell
+# variables. Other keys stay in ENV_VAL so they cannot overwrite script state.
+LoadEnvValues() {
+    local file="$1" settings="${2:-}" line key
+    [[ -f "$file" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        line="${line#export }"
+        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"
+        EnvRawValue "${BASH_REMATCH[2]}"
+        if [[ "$ENV_RAW_QUOTE" == "'" ]]; then
+            ENV_VAL["$key"]="$ENV_RAW_TEXT"
+        else
+            ExpandComposeInto "$ENV_RAW_TEXT"
+            ENV_VAL["$key"]="$EXPANDED"
+        fi
+        if [[ -n "$settings" ]] && IsScriptSettingKey "$key"; then
+            printf -v "$key" '%s' "${ENV_VAL[$key]}"
+        fi
+    done < "$file"
+}
+
+# Load project then service env files into ENV_VAL (last wins).
+LoadEnvValuesForService() {
     local compose_file="$1"
     local file
 
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
-        ApplyEnvFileToShell "$envFile"
+        LoadEnvValues "$envFile"
     fi
     while IFS= read -r file; do
         [[ -n "$file" ]] || continue
-        ApplyEnvFileToShell "$file"
+        LoadEnvValues "$file"
     done < <(ServiceEnvFiles "$compose_file")
 }
 
@@ -2692,7 +2765,7 @@ Envs() {
     fi
     Say info "$folder · ${#names[@]} var(s)"
     if [[ "$show_values" -eq 1 ]]; then
-        ApplyEnvFilesForService "$file"
+        LoadEnvValuesForService "$file"
     fi
     LoadEnvMap "$file"
     for name in "${names[@]}"; do
@@ -2729,8 +2802,8 @@ Envs() {
             missing=$((missing + 1))
         fi
         if [[ "$show_values" -eq 1 ]]; then
-            if [[ "$source" != "-" ]] && VarIsSet "$name"; then
-                value="${!name}"
+            if [[ "$source" != "-" ]] && EnvGet "$name"; then
+                value="$ENV_GOT"
                 val_color="$c_reset"
             else
                 value="-"
@@ -2755,7 +2828,8 @@ Envs() {
     fi
 }
 
-# Names referenced in env values (${VAR} / $VAR), one awk pass. Skips single-quoted values.
+# Names referenced in env values (${VAR} / $VAR), one awk pass. Follows EnvRawValue:
+# single-quoted values are literal, and quotes or " #" end the value. Skips $$.
 EnvFileRefNames() {
     local file="$1"
     [[ -f "$file" ]] || return 0
@@ -2767,7 +2841,15 @@ EnvFileRefNames() {
             sub(/^export[[:space:]]+/, "")
             if (!match($0, /^[A-Za-z_][A-Za-z0-9_]*=/)) next
             v = substr($0, RLENGTH + 1)
-            if (v ~ /^'\''.*'\''$/) next
+            sub(/^[[:space:]]+/, "", v)
+            if (substr(v, 1, 1) == "'\''") next
+            if (substr(v, 1, 1) == "\"") {
+                v = substr(v, 2)
+                if (i = index(v, "\"")) v = substr(v, 1, i - 1)
+            } else if (match(v, /[[:space:]]#/)) {
+                v = substr(v, 1, RSTART - 1)
+            }
+            gsub(/[$][$]/, "", v)
             while (match(v, /[$][{]?[A-Za-z_][A-Za-z0-9_]*/)) {
                 n = substr(v, RSTART, RLENGTH)
                 v = substr(v, RSTART + RLENGTH)
@@ -2979,6 +3061,10 @@ Unused() {
             MarkReferenced "$key"
         done < <(ComposeVarNames "$compose_file")
     done
+    # dc create and dc add write these templates later; keep the keys they need.
+    while IFS= read -r key; do
+        MarkReferenced "$key"
+    done < <(ComposeVarNames "$STUB_FILE"; AddAppBlock app app image APP app | ComposeVarNamesStdin)
 
     for key in "${!def_from[@]}"; do
         [[ -n "${referenced[$key]+x}" ]] && continue
@@ -4132,6 +4218,34 @@ ComposeServiceKeys() {
     done < <(grep -E '^  [A-Za-z0-9._-]+:[[:space:]]*$' "$file" 2>/dev/null | sed -E 's/^  ([^:]+):.*/\1/')
 }
 
+# AddAppBlock <app key> <container name> <image> <port prefix> <folder>
+# The compose service block dc add appends. Unused scans it too, so keys it
+# needs are never reported as unused.
+AddAppBlock() {
+    local svc_key="$1" cname="$2" image="$3" port_prefix="$4" folder="$5"
+    printf '\n'
+    printf '  %s:\n' "$svc_key"
+    printf '    container_name: %s\n' "$cname"
+    printf '    hostname: %s\n' "$svc_key"
+    printf '    image: %s\n' "$image"
+    printf '    restart: unless-stopped\n'
+    printf '    network_mode: bridge\n'
+    printf '    ports:\n'
+    printf '      - ${%s_PORT_80}:80\n' "$port_prefix"
+    printf '    volumes:\n'
+    printf '      - ${APPS}/%s/%s:/config\n' "$folder" "$svc_key"
+    printf '      - ${TIME}\n'
+    printf '    environment:\n'
+    printf '      - PUID=${PUID}\n'
+    printf '      - PGID=${PGID}\n'
+    printf '      - TZ=${TZ}\n'
+    printf '    logging:\n'
+    printf '      driver: json-file\n'
+    printf '      options:\n'
+    printf '        max-file: ${DOCKERLOGGING_MAXFILE}\n'
+    printf '        max-size: ${DOCKERLOGGING_MAXSIZE}\n'
+}
+
 Add() {
     local file svc_key image cname port_prefix answer existing
     local -a keys=()
@@ -4193,29 +4307,7 @@ Add() {
         return 0
     fi
 
-    {
-        printf '\n'
-        printf '  %s:\n' "$svc_key"
-        printf '    container_name: %s\n' "$cname"
-        printf '    hostname: %s\n' "$svc_key"
-        printf '    image: %s\n' "$image"
-        printf '    restart: unless-stopped\n'
-        printf '    network_mode: bridge\n'
-        printf '    ports:\n'
-        printf '      - ${%s_PORT_80}:80\n' "$port_prefix"
-        printf '    volumes:\n'
-        printf '      - ${APPS}/%s/%s:/config\n' "$folder" "$svc_key"
-        printf '      - ${TIME}\n'
-        printf '    environment:\n'
-        printf '      - PUID=${PUID}\n'
-        printf '      - PGID=${PGID}\n'
-        printf '      - TZ=${TZ}\n'
-        printf '    logging:\n'
-        printf '      driver: json-file\n'
-        printf '      options:\n'
-        printf '        max-file: ${DOCKERLOGGING_MAXFILE}\n'
-        printf '        max-size: ${DOCKERLOGGING_MAXSIZE}\n'
-    } >>"$file" || {
+    AddAppBlock "$svc_key" "$cname" "$image" "$port_prefix" "$folder" >>"$file" || {
         Say bad "Could not write $file."
         exit 1
     }
@@ -4587,7 +4679,8 @@ CheckPorts() {
             name="${key%%_PORT_*}"
             name="${name^^}"
             [[ -n "$name" ]] || continue
-            value="${value//$'\r'/}"
+            EnvRawValue "${value//$'\r'/}"
+            value="$ENV_RAW_TEXT"
             if [[ -n "${ports[$name]:-}" ]]; then
                 ports[$name]+="  ${value}"
             else
@@ -4643,12 +4736,6 @@ ImageRefUnresolved() {
     esac
 }
 
-VarIsSet() {
-    local name="$1"
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-    eval "[ \"\${${name}+x}\" = x ]"
-}
-
 CleanImageRef() {
     local val="$1"
     val="${val//$'\r'/}"
@@ -4670,10 +4757,10 @@ CleanImageRef() {
     printf '%s' "$val"
 }
 
-# Expand $VAR, ${VAR}, ${VAR:-default}, and ${VAR-default} from loaded env vars
-# into EXPANDED (no subshell). Locals are prefixed so env keys cannot shadow them.
+# Expand $VAR, ${VAR}, ${VAR:-default}, and ${VAR-default} from loaded env
+# values (EnvGet) into EXPANDED (no subshell).
 ExpandComposeInto() {
-    local _ecv_rest="$1" _ecv_out="" _ecv_name _ecv_def _ecv_match _ecv_val
+    local _ecv_rest="$1" _ecv_out="" _ecv_def _ecv_match
 
     while [[ -n "$_ecv_rest" ]]; do
         if [[ "$_ecv_rest" == \$\$* ]]; then
@@ -4683,22 +4770,20 @@ ExpandComposeInto() {
         fi
 
         if [[ "$_ecv_rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)(:-)([^}]*)\} ]]; then
-            _ecv_name="${BASH_REMATCH[1]}"
             _ecv_def="${BASH_REMATCH[3]}"
             _ecv_match="${BASH_REMATCH[0]}"
-            _ecv_val="${!_ecv_name-}"
-            [[ -n "$_ecv_val" ]] || _ecv_val="$_ecv_def"
-            _ecv_out+="$_ecv_val"
+            EnvGet "${BASH_REMATCH[1]}"
+            [[ -n "$ENV_GOT" ]] || ENV_GOT="$_ecv_def"
+            _ecv_out+="$ENV_GOT"
             _ecv_rest="${_ecv_rest:${#_ecv_match}}"
             continue
         fi
 
         if [[ "$_ecv_rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)-([^}]*)\} ]]; then
-            _ecv_name="${BASH_REMATCH[1]}"
             _ecv_def="${BASH_REMATCH[2]}"
             _ecv_match="${BASH_REMATCH[0]}"
-            if [[ -n "${!_ecv_name+x}" ]]; then
-                _ecv_out+="${!_ecv_name}"
+            if EnvGet "${BASH_REMATCH[1]}"; then
+                _ecv_out+="$ENV_GOT"
             else
                 _ecv_out+="$_ecv_def"
             fi
@@ -4707,9 +4792,9 @@ ExpandComposeInto() {
         fi
 
         if [[ "$_ecv_rest" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\} ]] || [[ "$_ecv_rest" =~ ^\$([A-Za-z_][A-Za-z0-9_]*) ]]; then
-            _ecv_name="${BASH_REMATCH[1]}"
             _ecv_match="${BASH_REMATCH[0]}"
-            _ecv_out+="${!_ecv_name-}"
+            EnvGet "${BASH_REMATCH[1]}"
+            _ecv_out+="$ENV_GOT"
             _ecv_rest="${_ecv_rest:${#_ecv_match}}"
             continue
         fi
@@ -5497,12 +5582,17 @@ ScheduleParseLine() {
     [[ -n "$SCHED_ACTION" ]]
 }
 
-# Old scheduled action name → "new_action option". Exit 1 when not renamed.
-ScheduleRenamed() {
+# Old action name → "new_action option". Exit 1 when not renamed.
+# Schedules use it to rewrite crontab lines; dispatch uses it to point at the new name.
+ActionRenamed() {
     case "$1" in
         pull) printf 'images --pull' ;;
         hosts) printf 'host list' ;;
         version) printf 'update --check' ;;
+        repull) printf 'update --force' ;;
+        restore) printf 'tidy --undo' ;;
+        key) printf 'host add' ;;
+        bashrc) printf 'setup' ;;
         *) return 1 ;;
     esac
 }
@@ -5594,7 +5684,7 @@ ScheduleMigrate() {
     for line in "${lines[@]}"; do
         ScheduleParseLine "$line" || continue
         ScheduleAllowed "$SCHED_ACTION" && continue
-        if renamed="$(ScheduleRenamed "$SCHED_ACTION")"; then
+        if renamed="$(ActionRenamed "$SCHED_ACTION")"; then
             new_action="${renamed%% *}"
             if [[ -n "${taken[$new_action]+x}" ]]; then
                 Say warn "$SCHED_ACTION is now $renamed, and $new_action is already scheduled."
@@ -5686,7 +5776,7 @@ ScheduleAdd() {
 
     if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
         Say bad "Schedule needs an allowed action."
-        if renamed="$(ScheduleRenamed "$action")"; then
+        if renamed="$(ActionRenamed "$action")"; then
             Say info "$action is now $renamed."
         fi
         Say info "$(ActionsWithFlag j)"
@@ -5955,8 +6045,9 @@ PrintBashrc() {
 # Do the Things
 action_lc="${action:-}"
 action_lc="${action_lc,,}"
-# setup runs before .env exists on a new install.
-if [[ "$action_lc" == "setup" ]]; then
+# setup runs before .env exists on a new install. bashrc is its old name.
+if [[ "$action_lc" == "setup" || "$action_lc" == "bashrc" ]]; then
+    [[ "$action_lc" == "bashrc" ]] && Say warn "bashrc is now setup. The old name still works for now."
     if [[ "${folder,,}" == "bashrc" ]]; then
         EXTRA_ARGS=("bashrc" "${EXTRA_ARGS[@]}")
     fi

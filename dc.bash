@@ -55,47 +55,45 @@ dc() {
     fi
 }
 
-_dc_apps_dir() {
+# Prints the last value of key $1 in the project .env: quotes removed, and a
+# trailing " # comment" on an unquoted value dropped (same rules as compose.sh).
+_dc_env_value() {
     local env_file="$COMPOSE_HOME/.env"
     local line value
+    [[ -f "$env_file" ]] || return 0
+    line="$(grep -E "^[[:space:]]*(export[[:space:]]+)?$1=" "$env_file" | tail -n 1)"
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    case "$value" in
+        \"*\"*) value="${value:1}"; value="${value%%\"*}" ;;
+        \'*\'*) value="${value:1}"; value="${value%%\'*}" ;;
+        *)
+            [[ "$value" =~ [[:space:]]# ]] && value="${value%%"${BASH_REMATCH[0]}"*}"
+            value="${value%"${value##*[![:space:]]}"}"
+            ;;
+    esac
+    printf '%s' "$value"
+}
 
-    if [[ -f "$env_file" ]]; then
-        line="$(grep -E '^[[:space:]]*APPS=' "$env_file" | tail -n 1)"
-        value="${line#*=}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
-        if [[ -n "$value" && -d "$value" ]]; then
-            printf '%s' "$value"
-            return
-        fi
+_dc_apps_dir() {
+    local value
+    value="$(_dc_env_value APPS)"
+    if [[ -n "$value" && -d "$value" ]]; then
+        printf '%s' "$value"
+        return
     fi
-
     printf '%s' "$COMPOSE_HOME"
 }
 
 _dc_archive_dir() {
-    local env_file="$COMPOSE_HOME/.env"
-    local apps line value
-
+    local apps value
     apps="$(_dc_apps_dir)"
-    if [[ -f "$env_file" ]]; then
-        line="$(grep -E '^[[:space:]]*ARCHIVE=' "$env_file" | tail -n 1)"
-        value="${line#*=}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        value="${value%\"}"
-        value="${value#\"}"
-        value="${value%\'}"
-        value="${value#\'}"
-        value="${value//\$APPS/$apps}"
-        if [[ -n "$value" ]]; then
-            printf '%s' "$value"
-            return
-        fi
+    value="$(_dc_env_value ARCHIVE)"
+    value="${value//\$\{APPS\}/$apps}"
+    value="${value//\$APPS/$apps}"
+    if [[ -n "$value" ]]; then
+        printf '%s' "$value"
+        return
     fi
     printf '%s' "$apps/.archive"
 }

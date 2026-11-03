@@ -1,5 +1,6 @@
 # Changelog
 
+### 2.0.1 .env inline comments work again; pull, hosts, and bashrc still run; env keys stay out of script state
 ### 2.0.0 update, tidy --undo, images --pull, host, and setup replace older actions
 ### 1.11.5 table-driven dispatch, shared helpers, and pipefail
 ### 1.11.4 faster startup, tables, env scans, and version check
