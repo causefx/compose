@@ -1,6 +1,7 @@
 #!/bin/bash
-VERSION=v1.11.4
-### ChangeNotes: faster startup, tables, env scans, and version check.
+VERSION=v1.11.5
+### ChangeNotes: table-driven dispatch, shared helpers, and pipefail.
+set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -102,66 +103,69 @@ ColumnWidth() {
     printf '%s' "$max"
 }
 
-# Add an action here. Help, dispatch, and dc tab completion read this list.
-# name|description|handler|compose args
+# Add an action here. Help, dispatch, scheduling, and dc.bash read this list.
+# name|flags|function|function args|description
+# flags: s = next dc word is the service name
+#        j = can be scheduled (dc schedule add)
+#        d = probe for docker compose before running
 ActionSpec() {
     cat <<'EOF'
 # @actions
 # @group Run
-up|Create and start containers|compose|up -d
-down|Stop and remove containers, networks|compose|down
-start|Start service(s)|compose|start
-stop|Stop service(s)|compose|stop
-restart|Restart service container(s)|compose|restart
-build|Build service image(s)|compose|build
-pause|Pause service(s)|compose|pause
-unpause|Unpause service(s)|compose|unpause
-exec|Run a command in a service|exec
-cp|Copy files to or from a service|cp
+up|sd|RunCompose|up -d|Create and start containers
+down|sd|RunCompose|down|Stop and remove containers, networks
+start|sd|RunCompose|start|Start service(s)
+stop|sd|RunCompose|stop|Stop service(s)
+restart|sd|RunCompose|restart|Restart service container(s)
+build|sd|RunCompose|build|Build service image(s)
+pause|sd|RunCompose|pause|Pause service(s)
+unpause|sd|RunCompose|unpause|Unpause service(s)
+exec|sd|Exec||Run a command in a service
+cp|sd|Cp||Copy files to or from a service
 # @group Check
-list|List services and env files|list
-ps|Show container(s)|ps
-issue|Show containers that need attention|issue
-logs|Show service logs|logs
-top|Show processes in a container|compose|top
-stats|Show CPU, memory, and network|stats
-images|List compose images and tags|images
-pull|Pull images and skip ones already current|pull
-config|Render compose file(s)|compose|config
-cmd|Print docker compose up with env files|cmd
-ports|Show ports from all env files|ports
-nextport|Show the next free host port|nextport
-df|Show Docker disk usage|df
-prune|Remove unused Docker data|prune
+list|sjd|List||List services and env files
+ps|sjd|Ps||Show container(s)
+issue|sjd|Issue||Show containers that need attention
+logs|sd|Logs||Show service logs
+top|sd|RunCompose|top|Show processes in a container
+stats|sd|Stats||Show CPU, memory, and network
+images|sjd|ShowImages|list|List compose images and tags
+pull|sjd|ShowImages|pull|Pull images and skip ones already current
+config|sd|RunCompose|config|Render compose file(s)
+cmd|sd|Cmd||Print docker compose up with env files
+ports|sj|CheckPorts||Show ports from all env files
+nextport|j|NextPort||Show the next free host port
+df|j|Disk||Show Docker disk usage
+prune||Prune||Remove unused Docker data
 # @group Services
-enable|Enable service(s)|enable
-disable|Disable service(s)|disable
-archive|Archive disabled service(s)|archive
-unarchive|Restore archived service(s)|unarchive
-create|Create service|create
-add|Add an app to a service compose file|add
-remove|Remove service|remove
-rename|Rename a service folder and env keys|rename
-move|Move a service to another host|move
-receive|Receive a service from another host|receive
-edit|Edit service|edit
-env|Edit project or service env file|env
-envs|List or fill env vars for a service|envs
-where|Show where an env var is used|where
-unused|List unused env vars and ask to remove|unused
-tidy|Organize the env file and sort ports|tidy
-restore|Restore .env from the tidy backup|restore
+enable|sd|Toggle|enable|Enable service(s)
+disable|sd|Toggle|disable|Disable service(s)
+archive|sd|Archive||Archive disabled service(s)
+unarchive|sd|Unarchive||Restore archived service(s)
+create|s|Create||Create service
+add|sd|Add||Add an app to a service compose file
+remove|sd|Remove||Remove service
+rename|sd|Rename||Rename a service folder and env keys
+move|sd|Move||Move a service to another host
+receive|s|Receive||Receive a service from another host
+edit|s|EditFile||Edit service
+env|s|EditEnv||Edit project or service env file
+envs|s|Envs||List or fill env vars for a service
+where||Where||Show where an env var is used
+unused||Unused||List unused env vars and ask to remove
+tidy|j|TidyEnv||Organize the env file and sort ports
+restore||RestoreEnv||Restore .env from the tidy backup
 # @group Script
-version|Display version|version
-update|Update script when a new version exists|update
-repull|Re-download repo files|repull
-bashrc|Add the dc.bash source line to ~/.bashrc|bashrc
-key|Create an SSH key and install it on a host|key
-hosts|List hosts ready for moving services|hosts
-path|Print script and APPS paths|path
-schedule|Manage scheduled compose actions|schedule
-docs|Show command documentation|docs
-help|This help menu|help
+version|j|ShowVersion||Display version
+update|j|UpdateScript||Update script when a new version exists
+repull||Repull||Re-download repo files
+bashrc||PrintBashrc||Add the dc.bash source line to ~/.bashrc
+key||Key||Create an SSH key and install it on a host
+hosts|j|Hosts||List hosts ready for moving services
+path||Path||Print script and APPS paths
+schedule||Schedule||Manage scheduled compose actions
+docs||Docs||Show command documentation
+help||Help||This help menu
 # @end
 EOF
 }
@@ -174,8 +178,35 @@ EachAction() {
     done < <(ActionSpec)
 }
 
+# Sets ACT_FLAGS, ACT_FN, ACT_ARGS, ACT_DESC for action $1. Exit 1 if unknown.
+ActionLookup() {
+    local name flags fn args desc
+    ACT_FLAGS="" ACT_FN="" ACT_ARGS="" ACT_DESC=""
+    while IFS='|' read -r name flags fn args desc; do
+        [[ "$name" == "$1" ]] || continue
+        ACT_FLAGS="$flags" ACT_FN="$fn" ACT_ARGS="$args" ACT_DESC="$desc"
+        return 0
+    done < <(EachAction)
+    return 1
+}
+
+# ActionHasFlag <action> <flag>
+ActionHasFlag() {
+    ActionLookup "$1" || return 1
+    [[ "$ACT_FLAGS" == *"$2"* ]]
+}
+
+# Prints the names of actions whose flags contain $1, space separated.
+ActionsWithFlag() {
+    local name flags out=""
+    while IFS='|' read -r name flags _; do
+        [[ "$flags" == *"$1"* ]] && out+="$name "
+    done < <(EachAction)
+    printf '%s' "${out% }"
+}
+
 Help() {
-    local line name desc handler args group
+    local line name flags fn args desc group
     local first=1
     Banner "help"
     printf "  %bcompose.sh -a <action> [-s service] [-- extra args]%b\n" "$c_dim" "$c_reset"
@@ -195,7 +226,7 @@ Help() {
             continue
         fi
         [[ -z "$line" || "$line" == \#* ]] && continue
-        IFS='|' read -r name desc handler args <<< "$line"
+        IFS='|' read -r name flags fn args desc <<< "$line"
         printf "  %b%-10s%b  %s\n" "$c_teal" "$name" "$c_reset" "$desc"
     done < <(ActionSpec)
 }
@@ -367,92 +398,43 @@ CheckFolderSuppliedNoExit() {
 
 # Action Functions
 CheckAction() {
-    local name desc handler args
     if [[ -z "${action:-}" ]]; then
         Say bad "Invalid option. Run compose.sh -h for available actions."
         exit 1
     fi
-    while IFS='|' read -r name desc handler args; do
-        [[ "$name" == "$action" ]] || continue
-        case "$handler" in
-            compose)
-                Banner "$name"
-                # shellcheck disable=SC2086
-                RunServices "$folder" $args "${EXTRA_ARGS[@]}"
-                ;;
-            logs)
-                Banner "logs"
-                Logs
-                ;;
-            enable)
-                Say ok "Enabling $folder"
-                Toggle enable "$folder"
-                ;;
-            disable)
-                Say warn "Disabling $folder"
-                Toggle disable "$folder"
-                ;;
-            archive) Archive ;;
-            unarchive) Unarchive ;;
-            list) List ;;
-            ps) Ps ;;
-            issue) Issue ;;
-            images) ShowImages list ;;
-            pull) ShowImages pull ;;
-            stats) Stats ;;
-            df) Disk ;;
-            prune) Prune ;;
-            exec) Exec ;;
-            cp) Cp ;;
-            create)
-                Banner "create"
-                Create "$folder"
-                ;;
-            add) Add ;;
-            remove) Remove "$folder" ;;
-            rename) Rename ;;
-            move) Move ;;
-            receive) Receive ;;
-            path) Path ;;
-            version)
-                Banner "version"
-                Say ok "$VERSION"
-                CheckVersion ask
-                ;;
-            update)
-                Banner "update"
-                CheckVersion apply
-                ;;
-            repull)
-                Banner "repull"
-                Update
-                ;;
-            ports) CheckPorts ;;
-            nextport) NextPort ;;
-            cmd) Cmd ;;
-            edit) EditFile "$folder" ;;
-            env) EditEnv ;;
-            envs) Envs ;;
-            where) Where ;;
-            unused) Unused ;;
-            tidy) TidyEnv ;;
-            restore) RestoreEnv ;;
-            bashrc) PrintBashrc ;;
-            key) Key ;;
-            hosts) Hosts ;;
-            schedule) Schedule ;;
-            docs) Docs ;;
-            help) Help ;;
-            *)
-                Say bad "Unknown handler: $handler"
-                exit 1
-                ;;
-        esac
-        return 0
-    done < <(EachAction)
-    Say bad "Invalid option. Run compose.sh -h for available actions."
-    Help
-    exit 1
+    if ! ActionLookup "$action"; then
+        Say bad "Invalid option. Run compose.sh -h for available actions."
+        Help
+        exit 1
+    fi
+    if ! declare -F "$ACT_FN" >/dev/null; then
+        Say bad "Unknown handler: $ACT_FN"
+        exit 1
+    fi
+    # shellcheck disable=SC2086
+    "$ACT_FN" $ACT_ARGS
+    return 0
+}
+
+RunCompose() {
+    Banner "$action"
+    RunServices "$folder" "$@" "${EXTRA_ARGS[@]}"
+}
+
+ShowVersion() {
+    Banner "version"
+    Say ok "$VERSION"
+    CheckVersion ask
+}
+
+UpdateScript() {
+    Banner "update"
+    CheckVersion apply
+}
+
+Repull() {
+    Banner "repull"
+    Update
 }
 
 # Exit 0 when $1 is a higher vMAJOR.MINOR.PATCH than $2.
@@ -684,9 +666,8 @@ HasServiceEnv() {
 }
 
 List() {
-    local dir path status env_label env_color width enabled_count=0 disabled_count=0 archived_count=0 i
-    local -a en_name=() en_status=() en_env=() dis_name=() dis_status=() dis_env=()
-    local -a ar_name=() ar_env=()
+    local dir path status env_label env_color width row kind prev="" mark mark_color
+    local -a names=() en_rows=() dis_rows=() ar_rows=()
     Banner "list"
     LoadProjectStatus
     while IFS= read -r dir; do
@@ -697,103 +678,64 @@ List() {
         env_label="-"
         HasServiceEnv "$dir" && env_label="yes"
         if [ -f "$dir/$COMPOSE_FILE" ]; then
-            en_name+=("$path")
-            en_status+=("$status")
-            en_env+=("$env_label")
-            enabled_count=$((enabled_count+1))
+            en_rows+=("enabled|$path|$env_label|$status")
+            names+=("$path")
         fi
         if [ -f "$dir/$COMPOSE_FILE_DISABLED" ]; then
-            dis_name+=("$path")
-            dis_status+=("$status")
-            dis_env+=("$env_label")
-            disabled_count=$((disabled_count+1))
+            dis_rows+=("disabled|$path|$env_label|$status")
+            names+=("$path")
         fi
     done < <(ServiceDirs)
     while IFS= read -r dir; do
         [[ -n "$dir" ]] || continue
         path="${dir%/}"
         path="${path##*/}"
-        ar_name+=("$path")
-        if HasServiceEnv "$dir"; then
-            ar_env+=("yes")
-        else
-            ar_env+=("-")
-        fi
-        archived_count=$((archived_count+1))
+        env_label="-"
+        HasServiceEnv "$dir" && env_label="yes"
+        ar_rows+=("archived|$path|$env_label|archived")
+        names+=("$path")
     done < <(ArchivedServiceDirs)
-    if [[ ${#en_name[@]} -eq 0 && ${#dis_name[@]} -eq 0 && ${#ar_name[@]} -eq 0 ]]; then
+    if [[ ${#names[@]} -eq 0 ]]; then
         Say info "No services."
         return
     fi
-    width="$(ColumnWidth 7 "${en_name[@]}" "${dis_name[@]}" "${ar_name[@]}")"
+    width="$(ColumnWidth 7 "${names[@]}")"
     printf "%b     %-*s  │  %-*s  │  %s%b\n" "$c_dim" \
         "$width" "service" \
         3 "env" \
         "containers" "$c_reset"
-    for i in "${!en_name[@]}"; do
-        if [[ "${en_env[$i]}" == "yes" ]]; then
-            env_label="yes"
-            env_color="$c_teal"
-        else
-            env_label="-"
-            env_color="$c_dim"
-        fi
-        StatusColor "${en_status[$i]}"
+    for row in "${en_rows[@]}" "${dis_rows[@]}" "${ar_rows[@]}"; do
+        IFS='|' read -r kind path env_label status <<<"$row"
+        [[ -n "$prev" && "$kind" != "$prev" ]] && printf "\n  %b%s%b\n" "$c_dim" "$kind" "$c_reset"
+        prev="$kind"
+        case "$kind" in
+            enabled) mark="✔"; mark_color="$c_green"; StatusColor "$status" ;;
+            disabled) mark="✘"; mark_color="$c_red"; StatusColor "$status" ;;
+            *) mark="▢"; mark_color="$c_dim"; STATUS_COLOR="$c_dim" ;;
+        esac
+        env_color="$c_dim"
+        [[ "$env_label" == "yes" ]] && env_color="$c_teal"
         printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
-            "$c_green" "✔" "$c_reset" \
-            "$width" "${en_name[$i]}" \
+            "$mark_color" "$mark" "$c_reset" \
+            "$width" "$path" \
             "$c_dim" "$c_reset" \
             "$env_color" 3 "$env_label" "$c_reset" \
             "$c_dim" "$c_reset" \
-            "$STATUS_COLOR" "${en_status[$i]}" "$c_reset"
+            "$STATUS_COLOR" "$status" "$c_reset"
     done
-    if [[ ${#dis_name[@]} -gt 0 ]]; then
-        [[ ${#en_name[@]} -gt 0 ]] && printf "\n  %bdisabled%b\n" "$c_dim" "$c_reset"
-        for i in "${!dis_name[@]}"; do
-            if [[ "${dis_env[$i]}" == "yes" ]]; then
-                env_label="yes"
-                env_color="$c_teal"
-            else
-                env_label="-"
-                env_color="$c_dim"
-            fi
-            StatusColor "${dis_status[$i]}"
-            printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
-                "$c_red" "✘" "$c_reset" \
-                "$width" "${dis_name[$i]}" \
-                "$c_dim" "$c_reset" \
-                "$env_color" 3 "$env_label" "$c_reset" \
-                "$c_dim" "$c_reset" \
-                "$STATUS_COLOR" "${dis_status[$i]}" "$c_reset"
-        done
-    fi
-    if [[ ${#ar_name[@]} -gt 0 ]]; then
-        [[ ${#en_name[@]} -gt 0 || ${#dis_name[@]} -gt 0 ]] && printf "\n  %barchived%b\n" "$c_dim" "$c_reset"
-        for i in "${!ar_name[@]}"; do
-            if [[ "${ar_env[$i]}" == "yes" ]]; then
-                env_label="yes"
-                env_color="$c_teal"
-            else
-                env_label="-"
-                env_color="$c_dim"
-            fi
-            printf "  %b%s%b  %-*s  %b│%b  %b%-*s%b  %b│%b  %b%s%b\n" \
-                "$c_dim" "▢" "$c_reset" \
-                "$width" "${ar_name[$i]}" \
-                "$c_dim" "$c_reset" \
-                "$env_color" 3 "$env_label" "$c_reset" \
-                "$c_dim" "$c_reset" \
-                "$c_dim" "archived" "$c_reset"
-        done
-    fi
     printf "\n"
-    Say info "$enabled_count enabled · $disabled_count disabled · $archived_count archived"
+    Say info "${#en_rows[@]} enabled · ${#dis_rows[@]} disabled · ${#ar_rows[@]} archived"
 }
 
 Toggle() {
     local action="$1"
-    local folder="$2"
+    local folder="${2:-$folder}"
     local fileName newFileName removeAnswer
+    if [[ "$action" == "enable" ]]; then
+        Say ok "Enabling $folder"
+    else
+        Say warn "Disabling $folder"
+    fi
     CheckFolderSupplied "$folder"
     if ! ValidServiceName "$folder"; then
         Say bad "Invalid service name."
@@ -806,10 +748,7 @@ Toggle() {
         fileName="$COMPOSE_FILE"
         newFileName="$COMPOSE_FILE_DISABLED"
     fi
-    if [[ ! -f "$APPS/$folder/$COMPOSE_FILE" && ! -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
-        Say bad "Service does not exist."
-        exit 1
-    fi
+    RequireComposeFile "$APPS/$folder"
 
     if [[ -f "$APPS/$folder/$fileName" ]]; then
         if [[ "$action" == "disable" ]] && CheckStatus "$folder"; then
@@ -883,7 +822,7 @@ ListArchived() {
 }
 
 ArchiveOne() {
-    local name="$1"
+    local name="$1" mode="${2:-}"
     local src dest root answer
 
     if ! ValidServiceName "$name"; then
@@ -917,10 +856,12 @@ ArchiveOne() {
         Say bad "Archive already has $name."
         return 1
     fi
-    answer="$(Ask "Archive disabled service $name? [y/N]")"
-    if [[ "$answer" != [yY] ]]; then
-        Say info "Left $name in place."
-        return 0
+    if [[ "$mode" != "noask" ]]; then
+        answer="$(Ask "Archive disabled service $name? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left $name in place."
+            return 0
+        fi
     fi
     mkdir -p "$root" || {
         Say bad "Could not create archive directory."
@@ -931,12 +872,12 @@ ArchiveOne() {
         return 1
     fi
     Say ok "Archived $name."
-    Say info "dc unarchive $name"
+    [[ "$mode" == "noask" ]] || Say info "dc unarchive $name"
     return 0
 }
 
 UnarchiveOne() {
-    local name="$1"
+    local name="$1" mode="${2:-}"
     local src dest root answer
 
     if ! ValidServiceName "$name"; then
@@ -956,10 +897,12 @@ UnarchiveOne() {
         Say bad "Service already exists under APPS: $name"
         return 1
     fi
-    answer="$(Ask "Unarchive $name as disabled? [y/N]")"
-    if [[ "$answer" != [yY] ]]; then
-        Say info "Left $name archived."
-        return 0
+    if [[ "$mode" != "noask" ]]; then
+        answer="$(Ask "Unarchive $name as disabled? [y/N]")"
+        if [[ "$answer" != [yY] ]]; then
+            Say info "Left $name archived."
+            return 0
+        fi
     fi
     mkdir -p "$APPS" || {
         Say bad "Could not use APPS directory."
@@ -970,12 +913,38 @@ UnarchiveOne() {
         return 1
     fi
     Say ok "Unarchived $name (still disabled)."
-    Say info "dc enable $name"
+    [[ "$mode" == "noask" ]] || Say info "dc enable $name"
     return 0
 }
 
+# BulkServiceAction <one_fn> <done_word> <question> <empty_msg> <names...>
+# Asks once, then runs "<one_fn> <name> noask" for each name.
+BulkServiceAction() {
+    local fn="$1" done_word="$2" question="$3" empty_msg="$4"
+    shift 4
+    local name answer ok=0 fail=0
+    if [[ $# -eq 0 ]]; then
+        Say info "$empty_msg"
+        return 0
+    fi
+    Say info "$# service(s)"
+    answer="$(Ask "$question [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left services in place."
+        return 0
+    fi
+    for name in "$@"; do
+        if "$fn" "$name" noask; then
+            ok=$((ok + 1))
+        else
+            fail=$((fail + 1))
+        fi
+    done
+    Say info "$ok $done_word · $fail skipped"
+}
+
 Archive() {
-    local dir path src dest answer ok=0 fail=0
+    local dir name
     local -a targets=()
 
     Banner "archive"
@@ -983,52 +952,21 @@ Archive() {
         ListArchived
         return 0
     fi
-    if [[ "$folder" == "all" ]]; then
-        while IFS= read -r dir; do
-            [[ -n "$dir" ]] || continue
-            path="$(basename "$dir")"
-            [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]] || continue
-            [[ -f "$dir/$COMPOSE_FILE" ]] && continue
-            targets+=("$path")
-        done < <(ServiceDirs)
-        if [[ ${#targets[@]} -eq 0 ]]; then
-            Say info "No disabled services to archive."
-            return 0
-        fi
-        Say info "${#targets[@]} disabled service(s)"
-        answer="$(Ask "Archive all disabled services? [y/N]")"
-        if [[ "$answer" != [yY] ]]; then
-            Say info "Left services in place."
-            return 0
-        fi
-        mkdir -p "$(ArchiveDir)" || {
-            Say bad "Could not create archive directory."
-            return 1
-        }
-        for path in "${targets[@]}"; do
-            src="$APPS/$path"
-            dest="$(ArchiveDir)/$path"
-            if [[ -e "$dest" ]]; then
-                Say warn "Skip $path · already in archive."
-                fail=$((fail + 1))
-                continue
-            fi
-            if mv -- "$src" "$dest"; then
-                Say ok "Archived $path."
-                ok=$((ok + 1))
-            else
-                Say bad "Could not archive $path."
-                fail=$((fail + 1))
-            fi
-        done
-        Say info "$ok archived · $fail skipped"
-        return 0
+    if [[ "$folder" != "all" ]]; then
+        ArchiveOne "$folder"
+        return
     fi
-    ArchiveOne "$folder"
+    while IFS= read -r dir; do
+        name="${dir%/}"
+        name="${name##*/}"
+        [[ -f "$dir/$COMPOSE_FILE_DISABLED" && ! -f "$dir/$COMPOSE_FILE" ]] && targets+=("$name")
+    done < <(ServiceDirs)
+    BulkServiceAction ArchiveOne archived "Archive all disabled services?" \
+        "No disabled services to archive." "${targets[@]}"
 }
 
 Unarchive() {
-    local dir path src dest answer ok=0 fail=0
+    local dir name
     local -a targets=()
 
     Banner "unarchive"
@@ -1036,47 +974,36 @@ Unarchive() {
         ListArchived
         return 0
     fi
-    if [[ "$folder" == "all" ]]; then
-        while IFS= read -r dir; do
-            [[ -n "$dir" ]] || continue
-            targets+=("$(basename "$dir")")
-        done < <(ArchivedServiceDirs)
-        if [[ ${#targets[@]} -eq 0 ]]; then
-            Say info "No archived services."
-            return 0
-        fi
-        Say info "${#targets[@]} archived service(s)"
-        answer="$(Ask "Unarchive all as disabled? [y/N]")"
-        if [[ "$answer" != [yY] ]]; then
-            Say info "Left services archived."
-            return 0
-        fi
-        for path in "${targets[@]}"; do
-            src="$(ArchiveDir)/$path"
-            dest="$APPS/$path"
-            if [[ -e "$dest" ]]; then
-                Say warn "Skip $path · already under APPS."
-                fail=$((fail + 1))
-                continue
-            fi
-            if mv -- "$src" "$dest"; then
-                Say ok "Unarchived $path."
-                ok=$((ok + 1))
-            else
-                Say bad "Could not unarchive $path."
-                fail=$((fail + 1))
-            fi
-        done
-        Say info "$ok unarchived · $fail skipped"
-        return 0
+    if [[ "$folder" != "all" ]]; then
+        UnarchiveOne "$folder"
+        return
     fi
-    UnarchiveOne "$folder"
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        name="${dir%/}"
+        name="${name##*/}"
+        targets+=("$name")
+    done < <(ArchivedServiceDirs)
+    BulkServiceAction UnarchiveOne unarchived "Unarchive all as disabled?" \
+        "No archived services." "${targets[@]}"
 }
 
+# Sets CHILD_DIR to the real path of parent/name when it is a directory that
+# resolves inside parent (no symlink escape). Exit 1 otherwise.
+SafeChildDir() {
+    local parent="$1" name="$2" real_parent target
+    CHILD_DIR=""
+    [[ -n "$name" && "$name" != *"/"* && "$name" != *".."* && "$name" != "." ]] || return 1
+    [[ -d "$parent/$name" ]] || return 1
+    real_parent="$(cd -P "$parent" && pwd -P)" || return 1
+    target="$(cd -P "$parent/$name" && pwd -P)" || return 1
+    [[ "$target" == "$real_parent"/* ]] || return 1
+    CHILD_DIR="$target"
+}
+
+# Prints the real path of an APPS service folder, with errors on stderr.
 ServiceDir() {
     local name="$1"
-    local parent target
-
     if [[ -z "$name" || "$name" == *"/"* || "$name" == *".."* || "$name" == "." ]]; then
         Say baderr "Invalid service name."
         return 1
@@ -1085,73 +1012,62 @@ ServiceDir() {
         Say baderr "APPS directory does not exist."
         return 1
     fi
-
-    parent="$(cd -P "$APPS" && pwd -P)"
-    target="$parent/$name"
-    if [[ ! -d "$target" ]]; then
+    if [[ ! -d "$APPS/$name" ]]; then
         Say baderr "Service does not exist."
         return 1
     fi
-    target="$(cd -P "$target" && pwd -P)"
-    case "$target" in
-        "$parent"/*) printf '%s\n' "$target" ;;
-        *)
-            Say baderr "Refusing to delete a path outside $parent."
-            return 1
-            ;;
-    esac
+    if ! SafeChildDir "$APPS" "$name"; then
+        Say baderr "Refusing to use a path outside $APPS."
+        return 1
+    fi
+    printf '%s\n' "$CHILD_DIR"
 }
 
 # Prints: /abs/path|apps   or   /abs/path|archive
 # Prefers APPS when both somehow exist.
 ResolveServiceRoot() {
     local name="$1"
-    local parent target root
-
-    if [[ -z "$name" || "$name" == *"/"* || "$name" == *".."* || "$name" == "." ]]; then
-        return 1
-    fi
     if [[ -d "${APPS:-}/$name" ]]; then
-        parent="$(cd -P "$APPS" && pwd -P)" || return 1
-        target="$(cd -P "$APPS/$name" && pwd -P)" || return 1
-        case "$target" in
-            "$parent"/*)
-                printf '%s|apps\n' "$target"
-                return 0
-                ;;
-            *) return 1 ;;
-        esac
+        SafeChildDir "$APPS" "$name" || return 1
+        printf '%s|apps\n' "$CHILD_DIR"
+        return 0
     fi
-    root="$(ArchiveDir)"
-    if [[ -d "$root/$name" ]]; then
-        parent="$(cd -P "$root" && pwd -P)" || return 1
-        target="$(cd -P "$root/$name" && pwd -P)" || return 1
-        case "$target" in
-            "$parent"/*)
-                printf '%s|archive\n' "$target"
-                return 0
-                ;;
-            *) return 1 ;;
-        esac
+    SafeChildDir "$(ArchiveDir)" "$name" || return 1
+    printf '%s|archive\n' "$CHILD_DIR"
+}
+
+# Sets SVC_COMPOSE to the enabled compose file in a service folder, else the
+# disabled one, and SVC_ENABLED to 1 or 0. Exit 1 when neither exists.
+FindComposeFile() {
+    local root="${1%/}"
+    SVC_COMPOSE=""
+    SVC_ENABLED=0
+    if [[ -f "$root/$COMPOSE_FILE" ]]; then
+        SVC_COMPOSE="$root/$COMPOSE_FILE"
+        SVC_ENABLED=1
+        return 0
+    fi
+    if [[ -f "$root/$COMPOSE_FILE_DISABLED" ]]; then
+        SVC_COMPOSE="$root/$COMPOSE_FILE_DISABLED"
+        return 0
     fi
     return 1
 }
 
 ServiceComposeFile() {
-    local root="$1"
-    if [[ -f "$root/$COMPOSE_FILE" ]]; then
-        printf '%s\n' "$root/$COMPOSE_FILE"
-        return 0
-    fi
-    if [[ -f "$root/$COMPOSE_FILE_DISABLED" ]]; then
-        printf '%s\n' "$root/$COMPOSE_FILE_DISABLED"
-        return 0
-    fi
-    return 1
+    FindComposeFile "$1" || return 1
+    printf '%s\n' "$SVC_COMPOSE"
+}
+
+# FindComposeFile, or say the service does not exist and exit 1.
+RequireComposeFile() {
+    FindComposeFile "$1" && return 0
+    Say bad "Service does not exist."
+    exit 1
 }
 
 Remove() {
-    local name="$1"
+    local name="${1:-$folder}"
     local target compose_file="" removeAnswer removeAnswerConfirm
 
     CheckFolderSupplied "$name"
@@ -1161,11 +1077,7 @@ Remove() {
     Banner "remove"
     Say warn "Removing service folder: $target"
 
-    if [[ -f "$APPS/$name/$COMPOSE_FILE" ]]; then
-        compose_file="$APPS/$name/$COMPOSE_FILE"
-    elif [[ -f "$APPS/$name/$COMPOSE_FILE_DISABLED" ]]; then
-        compose_file="$APPS/$name/$COMPOSE_FILE_DISABLED"
-    fi
+    FindComposeFile "$target" && compose_file="$SVC_COMPOSE"
     if [[ -n "$compose_file" ]] && CheckStatus "$name"; then
         Say warn "Service is running. Stopping it now."
         RunOneCompose "$compose_file" down
@@ -1217,15 +1129,10 @@ IndexOneService() {
     local -a crefs=() erefs=() defs=() part=()
     name="${dir##*/}"
     [[ -n "${IDX_STATE[$name]+x}" ]] && return 0
-    if [[ -f "$dir/$COMPOSE_FILE" ]]; then
-        compose_file="$dir/$COMPOSE_FILE"
-        state=enabled
-    elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
-        compose_file="$dir/$COMPOSE_FILE_DISABLED"
-        state=disabled
-    else
-        return 0
-    fi
+    FindComposeFile "$dir" || return 0
+    compose_file="$SVC_COMPOSE"
+    state=disabled
+    [[ "$SVC_ENABLED" -eq 1 ]] && state=enabled
     [[ "$loc" == "archive" ]] && state=archived
     mapfile -t crefs < <(ComposeVarNames "$compose_file")
     while IFS= read -r f; do
@@ -2492,7 +2399,7 @@ Disk() {
 }
 
 Prune() {
-    local answer tried=0 did=0 volume_prompt
+    local answer tried=0 did=0 volume_prompt prune_help
     Banner "prune"
     Say info "This cleans the whole Docker host."
     if ! docker system df; then
@@ -2510,7 +2417,8 @@ Prune() {
         fi
     fi
     # Docker 23+ prunes only anonymous volumes unless --all is passed.
-    if docker volume prune --help 2>/dev/null | grep -q -- '--all'; then
+    prune_help="$(docker volume prune --help 2>/dev/null)"
+    if [[ "$prune_help" == *--all* ]]; then
         volume_prompt="Remove unused anonymous volumes? Named volumes are kept. [y/N]"
     else
         volume_prompt="Remove unused volumes? Every volume not attached to a container is deleted, named ones too. [y/N]"
@@ -2547,16 +2455,9 @@ Cp() {
         Say info "dc cp $folder -- ./file $folder:/tmp/file"
         exit 1
     fi
-    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE"
-    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
-        Say warn "Service is disabled."
-        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
-    else
-        Say bad "Service does not exist."
-        exit 1
-    fi
-    RunOneCompose "$file" cp "${EXTRA_ARGS[@]}"
+    RequireComposeFile "$APPS/$folder"
+    [[ "$SVC_ENABLED" -eq 1 ]] || Say warn "Service is disabled."
+    RunOneCompose "$SVC_COMPOSE" cp "${EXTRA_ARGS[@]}"
 }
 
 ValidServiceName() {
@@ -2737,18 +2638,8 @@ Envs() {
         Say info "dc envs plex fill"
         exit 1
     fi
-    if [[ ! -d "$APPS/$folder" ]]; then
-        Say bad "Service does not exist."
-        exit 1
-    fi
-    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE"
-    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
-    else
-        Say bad "Service does not exist."
-        exit 1
-    fi
+    RequireComposeFile "$APPS/$folder"
+    file="$SVC_COMPOSE"
     if [[ "$do_fill" -eq 1 ]]; then
         EnvsFill "$file"
         return 0
@@ -3040,14 +2931,10 @@ Unused() {
     done
 
     for dir in "${all_dirs[@]}"; do
-        name="$(basename "$dir")"
-        if [[ -f "$dir/$COMPOSE_FILE" ]]; then
-            compose_file="$dir/$COMPOSE_FILE"
-        elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
-            compose_file="$dir/$COMPOSE_FILE_DISABLED"
-        else
-            continue
-        fi
+        name="${dir%/}"
+        name="${name##*/}"
+        FindComposeFile "$dir" || continue
+        compose_file="$SVC_COMPOSE"
         UnusedSpin "Scanning $name"
         while IFS= read -r key; do
             MarkReferenced "$key"
@@ -3511,9 +3398,10 @@ UnreadableUnder() {
     rm -f "$err"
 }
 
+# PackService <dest.tgz> <pack_root> <service_dir> <name>
+# Packs pack_root/name into dest; service_dir is only used to count files.
 PackService() {
-    local dest="$1"
-    local pack_root="${2:-$APPS}"
+    local dest="$1" pack_root="$2" service_dir="$3" name="$4"
     local verbose err count done_n tpid watcher=""
     verbose="$(mktemp)" || return 1
     err="$(mktemp)" || {
@@ -3524,9 +3412,9 @@ PackService() {
     count="${count//[[:space:]]/}"
     [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || count=1
     if command -v stdbuf >/dev/null 2>&1; then
-        stdbuf -oL tar -C "$pack_root" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
+        stdbuf -oL tar -C "$pack_root" -czf "$dest" -v "$name" >"$verbose" 2>"$err" &
     else
-        tar -C "$pack_root" -czf "$dest" -v "$folder" >"$verbose" 2>"$err" &
+        tar -C "$pack_root" -czf "$dest" -v "$name" >"$verbose" 2>"$err" &
     fi
     tpid=$!
     if [[ -t 2 ]]; then
@@ -3547,7 +3435,7 @@ PackService() {
             wait "$watcher" 2>/dev/null
         fi
         printf '\r\033[K' >&2
-        Say bad "Could not pack $folder."
+        Say bad "Could not pack $name."
         [[ -s "$err" ]] && cat "$err" >&2
         rm -f "$verbose" "$err"
         return 1
@@ -3807,18 +3695,16 @@ Move() {
         rm -f "$header" "$archive"
         exit 1
     }
-    if ! PackService "$archive" "$pack_root"; then
+    if ! PackService "$archive" "$pack_root" "$service_dir" "$folder"; then
         rm -f "$header" "$archive"
         exit 1
     fi
     printf -v remote_cmd 'bash %q -a receive -s %q' "$script_path" "$folder"
-    set -o pipefail
     {
         cat "$header"
         StreamFile "$archive" sending
     } | ssh "${ssh_opts[@]}" "$host" "$remote_cmd"
     status=$?
-    set +o pipefail
     rm -f "$header" "$archive"
     if [[ "$status" -ne 0 ]]; then
         printf '\r\033[K' >&2
@@ -4011,15 +3897,12 @@ Exec() {
         Say info "dc exec plex -- bash"
         exit 1
     fi
-    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE"
-    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
+    RequireComposeFile "$APPS/$folder"
+    if [[ "$SVC_ENABLED" -ne 1 ]]; then
         Say warn "Service is disabled."
         exit 1
-    else
-        Say bad "Service does not exist."
-        exit 1
     fi
+    file="$SVC_COMPOSE"
     while IFS= read -r svc; do
         [[ -n "$svc" ]] && svcs+=("$svc")
     done < <(RunOneCompose "$file" config --services 2>/dev/null)
@@ -4054,6 +3937,7 @@ Exec() {
 
 Logs() {
     local arg follow=0
+    Banner "logs"
     for arg in "${EXTRA_ARGS[@]}"; do
         case "$arg" in
             -f|--follow) follow=1 ;;
@@ -4067,26 +3951,24 @@ Logs() {
 }
 
 EditFile() {
-    local file_to_edit backup_file_to_edit
-    if ! CheckFolderSuppliedNoExit "$1"; then
+    local name="${1:-$folder}"
+    if ! CheckFolderSuppliedNoExit "$name"; then
         Say bad "No service name supplied."
         exit 1
     fi
-    file_to_edit="$APPS/$1/$COMPOSE_FILE"
-    backup_file_to_edit="$APPS/$1/$COMPOSE_FILE_DISABLED"
-    if [ -f "$file_to_edit" ]; then
-        Say ok "Using $file_to_edit"
-    elif [ -f "$backup_file_to_edit" ]; then
-        Say warn "Primary file not found. Using $backup_file_to_edit"
-        file_to_edit="$backup_file_to_edit"
-    else
+    if ! FindComposeFile "$APPS/$name"; then
         Say bad "Neither primary nor backup file exists."
-        Say info "$file_to_edit"
-        Say info "$backup_file_to_edit"
+        Say info "$APPS/$name/$COMPOSE_FILE"
+        Say info "$APPS/$name/$COMPOSE_FILE_DISABLED"
         exit 1
     fi
-    Banner "edit $1"
-    OpenEditor "$file_to_edit"
+    if [[ "$SVC_ENABLED" -eq 1 ]]; then
+        Say ok "Using $SVC_COMPOSE"
+    else
+        Say warn "Primary file not found. Using $SVC_COMPOSE"
+    fi
+    Banner "edit $name"
+    OpenEditor "$SVC_COMPOSE"
 }
 
 EditEnv() {
@@ -4156,7 +4038,8 @@ OpenEditor() {
 
 Create() {
     local image content target
-    if ! CheckFolderSuppliedNoExit "$1"; then
+    Banner "create"
+    if ! CheckFolderSuppliedNoExit "${1:-$folder}"; then
         folder="$(Ask "What should we name the service:")"
         folder="${folder,,}"
     fi
@@ -4225,18 +4108,8 @@ Add() {
         Say info "dc unarchive $folder"
         exit 1
     fi
-    if [[ ! -d "$APPS/$folder" ]]; then
-        Say bad "Service does not exist."
-        exit 1
-    fi
-    if [[ -f "$APPS/$folder/$COMPOSE_FILE" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE"
-    elif [[ -f "$APPS/$folder/$COMPOSE_FILE_DISABLED" ]]; then
-        file="$APPS/$folder/$COMPOSE_FILE_DISABLED"
-    else
-        Say bad "Service does not exist."
-        exit 1
-    fi
+    RequireComposeFile "$APPS/$folder"
+    file="$SVC_COMPOSE"
 
     while IFS= read -r existing; do
         [[ -n "$existing" ]] && keys+=("$existing")
@@ -5499,10 +5372,7 @@ BashrcHasSource() {
 }
 
 ScheduleAllowed() {
-    case "$1" in
-        pull|update|tidy|issue|images|ports|df|hosts|nextport|version|list|ps) return 0 ;;
-        *) return 1 ;;
-    esac
+    [[ -n "$1" ]] && ActionHasFlag "$1" j
 }
 
 ScheduleMarker() {
@@ -5596,7 +5466,7 @@ ScheduleAdd() {
 
     if [[ -z "$action" ]] || ! ScheduleAllowed "$action"; then
         Say bad "Schedule needs an allowed action."
-        Say info "pull update tidy issue images ports df hosts nextport version list ps"
+        Say info "$(ActionsWithFlag j)"
         Say info "dc schedule add pull 0 4 '*' '*' '*'"
         exit 1
     fi
@@ -5872,10 +5742,9 @@ if [[ "$action" == "receive" ]]; then
     Receive
     exit $?
 fi
-case "$action" in
-    help|docs|version|update|repull|key|hosts|schedule|tidy|restore|where|unused|env|envs|edit|ports|nextport|create|df|prune) ;;
-    *) CheckDockerCompose ;;
-esac
+if ActionHasFlag "$action" d; then
+    CheckDockerCompose
+fi
 CheckAction;
 
 exit 0

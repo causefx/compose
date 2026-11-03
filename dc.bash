@@ -2,12 +2,35 @@
 COMPOSE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_SH="$COMPOSE_HOME/compose.sh"
 
+# Prints "name|flags" for each action in the compose.sh ActionSpec.
+_dc_actions() {
+    awk -F'|' '
+        /^# @actions$/ {p=1; next}
+        /^# @end$/ {exit}
+        p && !/^#/ && NF > 1 {print $1 "|" $2}
+    ' "$COMPOSE_SH"
+}
+
+# Prints action names whose flags contain $1.
+_dc_actions_flag() {
+    local name flags out=""
+    while IFS='|' read -r name flags; do
+        [[ "$flags" == *"$1"* ]] && out+="$name "
+    done < <(_dc_actions)
+    printf '%s' "${out% }"
+}
+
 dc() {
     local action="${1:-}"
     shift || true
-    local service=""
+    local service="" flags
     local -a extra=()
-    if [[ "$action" != "key" && "$action" != "nextport" && "$action" != "schedule" && "$action" != "docs" && "$action" != "where" && "$action" != "unused" && $# -gt 0 && "$1" != -* ]]; then
+    flags="$(awk -F'|' -v a="$action" '
+        /^# @actions$/ {p=1; next}
+        /^# @end$/ {exit}
+        p && $1 == a {print $2; exit}
+    ' "$COMPOSE_SH")"
+    if [[ "$flags" == *s* && $# -gt 0 && "$1" != -* ]]; then
         service="$1"
         shift
     fi
@@ -79,17 +102,15 @@ _dc_compose_hosts() {
 }
 
 _dc_completions() {
-    local cur opts_a opts_s opts_arch opts_hosts apps archive dir name
+    local cur opts_a opts_s opts_arch opts_hosts apps archive dir name flags line
     cur="${COMP_WORDS[COMP_CWORD]}"
 
-    opts_a="$(awk '
-        /^# @actions$/ {p=1; next}
-        /^# @end$/ {p=0}
-        p && index($0, "|") {
-            split($0, a, "|")
-            printf "%s ", a[1]
-        }
-    ' "$COMPOSE_SH")"
+    opts_a=""
+    flags=""
+    while IFS= read -r line; do
+        opts_a+="${line%%|*} "
+        [[ "${line%%|*}" == "${COMP_WORDS[1]:-}" ]] && flags="${line#*|}"
+    done < <(_dc_actions)
     opts_a="${opts_a% }"
     apps="$(_dc_apps_dir)"
     opts_s="all"
@@ -116,7 +137,7 @@ _dc_completions() {
         COMPREPLY=( $(compgen -W "$opts_arch" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 2 && ( "${COMP_WORDS[1]}" == "move" || "${COMP_WORDS[1]}" == "rename" ) ]]; then
         COMPREPLY=( $(compgen -W "$opts_s ${opts_arch#all }" -- "$cur") )
-    elif [[ "$COMP_CWORD" -eq 2 && "${COMP_WORDS[1]}" != "key" && "${COMP_WORDS[1]}" != "nextport" && "${COMP_WORDS[1]}" != "where" && "${COMP_WORDS[1]}" != "unused" ]]; then
+    elif [[ "$COMP_CWORD" -eq 2 && "$flags" == *s* ]]; then
         COMPREPLY=( $(compgen -W "$opts_s" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "move" ]]; then
         opts_hosts="$(_dc_compose_hosts)"
@@ -124,7 +145,7 @@ _dc_completions() {
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "envs" ]]; then
         COMPREPLY=( $(compgen -W "values fill" -- "$cur") )
     elif [[ "$COMP_CWORD" -eq 3 && "${COMP_WORDS[1]}" == "schedule" && ( "${COMP_WORDS[2]}" == "add" || "${COMP_WORDS[2]}" == "remove" ) ]]; then
-        COMPREPLY=( $(compgen -W "pull update tidy issue images ports df hosts nextport version list ps" -- "$cur") )
+        COMPREPLY=( $(compgen -W "$(_dc_actions_flag j)" -- "$cur") )
     fi
 }
 

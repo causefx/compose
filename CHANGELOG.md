@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.11.5 table-driven dispatch, shared helpers, and pipefail
 ### 1.11.4 faster startup, tables, env scans, and version check
 ### 1.11.3 safer env load, unused, disable, create, prune, and exit codes
 ### 1.11.2 unused scans compose refs in one pass
