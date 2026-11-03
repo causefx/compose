@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.11.1
-### ChangeNotes: unused shows a spinner while scanning.
+VERSION=v1.11.2
+### ChangeNotes: unused scans compose refs in one pass.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -2780,8 +2780,19 @@ ComposeUsesVar() {
 }
 
 EnvFileUsesVar() {
-    local file="$1" want="$2" line raw
+    local file="$1" want="$2" name
     [[ -f "$file" ]] || return 1
+    while IFS= read -r name; do
+        [[ "$name" == "$want" ]] && return 0
+    done < <(EnvFileRefNames "$file")
+    return 1
+}
+
+# Names referenced in env values (${VAR} / $VAR). Skips single-quoted values.
+EnvFileRefNames() {
+    local file="$1" line raw match name new
+    local -A seen=()
+    [[ -f "$file" ]] || return 0
     while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line//$'\r'/}"
         line="${line#"${line%%[![:space:]]*}"}"
@@ -2794,11 +2805,29 @@ EnvFileUsesVar() {
         if [[ "$raw" == \"*\" ]]; then
             raw="${raw:1:${#raw}-2}"
         fi
-        if [[ "$raw" =~ \$\{$want([^A-Za-z0-9_]|$) ]] || [[ "$raw" =~ \$$want([^A-Za-z0-9_]|$) ]]; then
-            return 0
-        fi
+        while [[ "$raw" =~ \$\{([A-Za-z_][A-Za-z0-9_]*) ]]; do
+            name="${BASH_REMATCH[1]}"
+            match="${BASH_REMATCH[0]}"
+            if [[ -z "${seen[$name]+x}" ]]; then
+                seen["$name"]=1
+                printf '%s\n' "$name"
+            fi
+            new="${raw/"$match"/}"
+            [[ "$new" == "$raw" ]] && break
+            raw="$new"
+        done
+        while [[ "$raw" =~ \$([A-Za-z_][A-Za-z0-9_]*) ]]; do
+            name="${BASH_REMATCH[1]}"
+            match="${BASH_REMATCH[0]}"
+            if [[ -z "${seen[$name]+x}" ]]; then
+                seen["$name"]=1
+                printf '%s\n' "$name"
+            fi
+            new="${raw/"$match"/}"
+            [[ "$new" == "$raw" ]] && break
+            raw="$new"
+        done
     done < "$file"
-    return 1
 }
 
 ServiceEnvUsesVar() {
@@ -2922,28 +2951,12 @@ EnvFileKeys() {
     done < "$file"
 }
 
-VarReferencedByAnyService() {
-    local want="$1" dir compose_file
-    while IFS= read -r dir; do
-        [[ -n "$dir" ]] || continue
-        if [[ -f "$dir/$COMPOSE_FILE" ]]; then
-            compose_file="$dir/$COMPOSE_FILE"
-        elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
-            compose_file="$dir/$COMPOSE_FILE_DISABLED"
-        else
-            continue
-        fi
-        ComposeUsesVar "$compose_file" "$want" && return 0
-        ServiceEnvUsesVar "$compose_file" "$want" && return 0
-    done < <(ServiceDirs)
-    return 1
-}
-
 Unused() {
-    local dir f key name source width answer removed=0
+    local dir f key name source width answer removed=0 compose_file
     local spin='|/-\' tick=0
     local -A def_from=()
     local -A def_files=()
+    local -A referenced=()
     local -a unused_keys=()
 
     Banner "unused"
@@ -2977,6 +2990,12 @@ Unused() {
         fi
     }
 
+    MarkReferenced() {
+        local n="$1"
+        [[ -n "$n" ]] || return 0
+        referenced["$n"]=1
+    }
+
     UnusedSpin "Reading env files"
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
         while IFS= read -r key; do
@@ -2997,9 +3016,30 @@ Unused() {
         done < <(EnvFilesInDir "$dir")
     done < <(ServiceDirs)
 
+    while IFS= read -r dir; do
+        [[ -n "$dir" ]] || continue
+        name="$(basename "$dir")"
+        if [[ -f "$dir/$COMPOSE_FILE" ]]; then
+            compose_file="$dir/$COMPOSE_FILE"
+        elif [[ -f "$dir/$COMPOSE_FILE_DISABLED" ]]; then
+            compose_file="$dir/$COMPOSE_FILE_DISABLED"
+        else
+            continue
+        fi
+        UnusedSpin "Scanning $name"
+        while IFS= read -r key; do
+            MarkReferenced "$key"
+        done < <(ComposeVarNames "$compose_file")
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            while IFS= read -r key; do
+                MarkReferenced "$key"
+            done < <(EnvFileRefNames "$f")
+        done < <(ServiceEnvFiles "$compose_file")
+    done < <(ServiceDirs)
+
     for key in "${!def_from[@]}"; do
-        UnusedSpin "Checking $key"
-        VarReferencedByAnyService "$key" && continue
+        [[ -n "${referenced[$key]+x}" ]] && continue
         unused_keys+=("$key")
     done
     UnusedSpinClear

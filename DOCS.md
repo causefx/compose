@@ -412,7 +412,7 @@ dc where PUID
 
 ### unused
 
-List env keys that are assigned but not referenced by any service (same scan as `where`: compose files and service env values). Reads definitions from the project `.env` and every service-folder env file. Skips script settings (`APPS`, `ARCHIVE`, `COMPOSE_FILE`, `COMPOSE_FILE_DISABLED`, `STUB_FILE`, `STARTING_PORT`). Table columns: **key** and **from** (`shared`, a service name, or both). Sorted by key A–Z. Shows a spinner on the terminal while scanning.
+List env keys that are assigned but not referenced by any service (same meaning as `where`: compose `${VAR}` / `$VAR` and nested refs in service env values). Loads defined keys first, then walks each compose (and its service env files) once to build the referenced set; unused is defined minus referenced. Skips script settings (`APPS`, `ARCHIVE`, `COMPOSE_FILE`, `COMPOSE_FILE_DISABLED`, `STUB_FILE`, `STARTING_PORT`). Table columns: **key** and **from** (`shared`, a service name, or both). Sorted by key A–Z. Shows a spinner on the terminal while scanning.
 
 After the table, asks whether to remove those keys from the files that define them (`[y/N]`, default no).
 

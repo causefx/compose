@@ -1,5 +1,6 @@
 # Changelog
 
+### 1.11.2 unused scans compose refs in one pass
 ### 1.11.1 unused shows a spinner while scanning
 ### 1.11.0 unused asks before removing unused keys
 ### 1.10.0 unused lists env keys no service references
