@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v1.10.0
-### ChangeNotes: unused lists env keys no service references.
+VERSION=v1.11.0
+### ChangeNotes: unused asks before removing unused keys.
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
 GITHUB_RAWURL="$GITHUB_RAW_BASE/compose.sh"
@@ -161,7 +161,7 @@ edit|Edit service|edit
 env|Edit project or service env file|env
 envs|List or fill env vars for a service|envs
 where|Show where an env var is used|where
-unused|List unused env vars|unused
+unused|List unused env vars and ask to remove|unused
 tidy|Organize the env file and sort ports|tidy
 restore|Restore .env from the tidy backup|restore
 # @group Script
@@ -1280,6 +1280,22 @@ RewriteEnvKeyInFile() {
         else
             printf '%s\n' "$line" >>"$tmp"
         fi
+    done < "$file"
+    mv "$tmp" "$file"
+}
+
+RemoveEnvKeyInFile() {
+    local file="$1" want="$2"
+    local tmp line key
+    [[ -f "$file" ]] || return 0
+    tmp="$(mktemp)" || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line//$'\r'/}"
+        if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+            key="${BASH_REMATCH[1]}"
+            [[ "$key" == "$want" ]] && continue
+        fi
+        printf '%s\n' "$line" >>"$tmp"
     done < "$file"
     mv "$tmp" "$file"
 }
@@ -2924,29 +2940,35 @@ VarReferencedByAnyService() {
 }
 
 Unused() {
-    local dir f key name source width
+    local dir f key name source width answer removed=0
     local -A def_from=()
+    local -A def_files=()
     local -a unused_keys=()
 
     Banner "unused"
 
     AddUnusedDef() {
-        local k="$1" src="$2"
+        local k="$1" src="$2" file="$3"
         IsScriptSettingKey "$k" && return 0
         if [[ -z "${def_from[$k]+x}" ]]; then
             def_from["$k"]="$src"
-            return 0
+        else
+            case ", ${def_from[$k]}, " in
+                *", $src, "*) ;;
+                *) def_from["$k"]="${def_from[$k]}, $src" ;;
+            esac
         fi
-        case ", ${def_from[$k]}, " in
-            *", $src, "*) ;;
-            *) def_from["$k"]="${def_from[$k]}, $src" ;;
-        esac
+        if [[ -z "${def_files[$k]+x}" ]]; then
+            def_files["$k"]="$file"
+        elif [[ $'\n'"${def_files[$k]}"$'\n' != *$'\n'"$file"$'\n'* ]]; then
+            def_files["$k"]="${def_files[$k]}"$'\n'"$file"
+        fi
     }
 
     if [[ -n "${envFile:-}" && -f "$envFile" ]]; then
         while IFS= read -r key; do
             [[ -n "$key" ]] || continue
-            AddUnusedDef "$key" "shared"
+            AddUnusedDef "$key" "shared" "$envFile"
         done < <(EnvFileKeys "$envFile")
     fi
     while IFS= read -r dir; do
@@ -2956,7 +2978,7 @@ Unused() {
             [[ -n "$f" ]] || continue
             while IFS= read -r key; do
                 [[ -n "$key" ]] || continue
-                AddUnusedDef "$key" "$name"
+                AddUnusedDef "$key" "$name" "$f"
             done < <(EnvFileKeys "$f")
         done < <(EnvFilesInDir "$dir")
     done < <(ServiceDirs)
@@ -2984,6 +3006,22 @@ Unused() {
             "$c_dim" "$c_reset" \
             "$source"
     done < <(printf '%s\n' "${unused_keys[@]}" | LC_ALL=C sort -u)
+
+    answer="$(Ask "Remove these unused env vars? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left unused keys in place."
+        return 0
+    fi
+
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            RemoveEnvKeyInFile "$f" "$key"
+        done < <(printf '%s\n' "${def_files[$key]}")
+        removed=$((removed + 1))
+    done < <(printf '%s\n' "${unused_keys[@]}" | LC_ALL=C sort -u)
+    Say ok "Removed $removed unused env var(s)."
 }
 
 TrimField() {
