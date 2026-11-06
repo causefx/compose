@@ -305,7 +305,11 @@ dc disable plex
 
 ### archive
 
-Move a **disabled** service folder into `ARCHIVE` (default `APPS/.archive/`). Enabled services must be disabled first. Stays out of normal `list`/run loops until unarchived. With no service name, lists archived services. `all` archives every currently disabled service after confirm.
+Move a service folder into `ARCHIVE` (default `APPS/.archive/`). Stays out of normal `list`/run loops until unarchived. With no service name, lists archived services. `all` archives every currently disabled service after confirm.
+
+- **Up** (containers still present) — refused; stop first (`dc down`, then `dc disable`)
+- **Enabled but down** — asks to disable, then archives
+- **Already disabled** — asks to archive as before
 
 ```bash
 dc archive

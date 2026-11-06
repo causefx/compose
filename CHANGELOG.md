@@ -1,5 +1,6 @@
 # Changelog
 
+### 2.2.2 archive refuses services that are up; enabled-but-down asks to disable first
 ### 2.2.1 schedule logs go in .logs; dc schedule offers to move old jobs and logs
 ### 2.2.0 clean replaces prune, also removes unused named volumes, and clean --yes can be scheduled
 ### 2.1.0 up can be scheduled to start every enabled service

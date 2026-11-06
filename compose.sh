@@ -1,5 +1,5 @@
 #!/bin/bash
-VERSION=v2.2.1
+VERSION=v2.2.2
 ### ChangeNotes: schedule logs move to .logs.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
@@ -150,7 +150,7 @@ clean|j|Clean||--yes|Remove unused images, cache, containers, networks, and volu
 # @group Services
 enable|sd|Toggle|enable||Enable service(s)
 disable|sd|Toggle|disable||Disable service(s)
-archive|sd|Archive|||Archive disabled service(s)
+archive|sd|Archive|||Archive service(s); refuses up, can disable when down
 unarchive|sd|Unarchive|||Restore archived service(s)
 create|s|Create|||Create service
 add|sd|Add|||Add an app to a service compose file
@@ -883,7 +883,7 @@ ListArchived() {
 
 ArchiveOne() {
     local name="$1" mode="${2:-}"
-    local src dest root answer
+    local src dest root answer enabled=0
 
     if ! ValidServiceName "$name"; then
         Say bad "Archive needs a service name."
@@ -903,20 +903,34 @@ ArchiveOne() {
         Say bad "Service does not exist."
         return 1
     fi
-    if [[ -f "$src/$COMPOSE_FILE" ]]; then
-        Say bad "Service is enabled. Disable it first."
-        Say info "dc disable $name"
-        return 1
-    fi
-    if [[ ! -f "$src/$COMPOSE_FILE_DISABLED" ]]; then
-        Say bad "Service has no disabled compose file."
-        return 1
-    fi
     if [[ -e "$dest" ]]; then
         Say bad "Archive already has $name."
         return 1
     fi
-    if [[ "$mode" != "noask" ]]; then
+    if [[ -f "$src/$COMPOSE_FILE" ]]; then
+        enabled=1
+        if CheckStatus "$name"; then
+            Say bad "Service is up. Stop it before archiving."
+            Say info "dc down $name"
+            Say info "dc disable $name"
+            return 1
+        fi
+        if [[ "$mode" != "noask" ]]; then
+            answer="$(Ask "Service is enabled but down. Disable and archive $name? [y/N]")"
+            if [[ "$answer" != [yY] ]]; then
+                Say info "Left $name enabled."
+                return 0
+            fi
+        fi
+        if ! mv -- "$src/$COMPOSE_FILE" "$src/$COMPOSE_FILE_DISABLED"; then
+            Say bad "Could not disable $name."
+            return 1
+        fi
+        Say warn "Service disabled."
+    elif [[ ! -f "$src/$COMPOSE_FILE_DISABLED" ]]; then
+        Say bad "Service has no disabled compose file."
+        return 1
+    elif [[ "$mode" != "noask" ]]; then
         answer="$(Ask "Archive disabled service $name? [y/N]")"
         if [[ "$answer" != [yY] ]]; then
             Say info "Left $name in place."
