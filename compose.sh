@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v2.0.1
-### ChangeNotes: .env inline comments, old action names, and env keys no longer override the script.
+VERSION=v2.1.0
+### ChangeNotes: up can be scheduled to start every enabled service.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -123,7 +123,7 @@ ActionSpec() {
     cat <<'EOF'
 # @actions
 # @group Run
-up|sd|RunCompose|up -d||Create and start containers
+up|sjd|RunCompose|up -d||Create and start containers
 down|sd|RunCompose|down||Stop and remove containers, networks
 start|sd|RunCompose|start||Start service(s)
 stop|sd|RunCompose|stop||Stop service(s)

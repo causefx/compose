@@ -62,6 +62,8 @@ dc up all
 dc up
 ```
 
+`up` can be scheduled. The job runs every enabled service; services already running stay unchanged.
+
 With no service name, asks whether to loop all services. Batch mode prints one brief line per service when nothing changes; Compose output stays on screen when something changes or fails. Loads the project `.env` plus any env files in that service’s folder. If the named service is **disabled**, asks to enable it and continue (`start`, `restart`, and `build` do the same).
 
 ### down
@@ -552,7 +554,7 @@ dc schedule remove images
 - **add ACTION [options] m h dom mon dow** — options from that action (for example `images --pull`, `update --check`, `host list`), then five cron fields; asks before writing
 - **remove ACTION** — asks before deleting; also removes jobs for actions that no longer exist
 
-Allowed actions: `list`, `ps`, `issue`, `images`, `ports`, `nextport`, `df`, `tidy`, `update`, `host`.
+Allowed actions: `up`, `list`, `ps`, `issue`, `images`, `ports`, `nextport`, `df`, `tidy`, `update`, `host`. A scheduled `up` runs every enabled service, for example `dc schedule add up '*/15' '*' '*' '*' '*'`.
 
 Jobs from older versions that use `pull`, `hosts`, or `version` are marked on `dc schedule`, which offers to rewrite them as `images --pull`, `host list`, and `update --check` (keeping the time, env file, and paths).
 

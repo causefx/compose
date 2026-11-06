@@ -1,5 +1,6 @@
 # Changelog
 
+### 2.1.0 up can be scheduled to start every enabled service
 ### 2.0.1 .env inline comments work again; pull, hosts, and bashrc still run; env keys stay out of script state
 ### 2.0.0 update, tidy --undo, images --pull, host, and setup replace older actions
 ### 1.11.5 table-driven dispatch, shared helpers, and pipefail
