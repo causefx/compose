@@ -29,7 +29,7 @@ Tab completion lists actions first, then `all` and service folder names from `AP
 
 ### Service name
 
-Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. With no name, `down`, `stop`, and `restart` default to **no** (`[y/N]`); other loops default to yes. Some commands never take a service: `nextport`, `df`, `prune`, `where`, `unused`, `tidy`, `update`, `host`, `setup`, `schedule`, `docs`, `help`. For those, the next word is an option or subcommand (`dc update --check`, `dc host add root@other-host`).
+Most commands take an optional service folder name (`plex`, `organizr`). `all` or no name (after confirm) loops every service folder. With no name, `down`, `stop`, and `restart` default to **no** (`[y/N]`); other loops default to yes. Some commands never take a service: `nextport`, `df`, `clean`, `where`, `unused`, `tidy`, `update`, `host`, `setup`, `schedule`, `docs`, `help`. For those, the next word is an option or subcommand (`dc update --check`, `dc host add root@other-host`).
 
 ### Marks
 
@@ -266,18 +266,22 @@ Show Docker disk usage (`docker system df`).
 dc df
 ```
 
-### prune
+### clean
 
 Host-wide cleanup. Shows `docker system df`, then asks twice (Enter = no):
 
-1. `docker system prune -a -f` (includes build cache)
-2. `docker volume prune -f`. On Docker 23+ this removes only unused **anonymous** volumes; named volumes stay. Older Docker removes every unused volume, named ones too. The prompt says which applies. Volumes attached to any container, including stopped ones, always stay.
+1. Unused images, build cache, stopped containers, and networks (`docker system prune -a -f`)
+2. Every volume not attached to a container, **named ones too** (`docker volume prune --all -f` on Docker 23+, `docker volume prune -f` on older Docker). Data in those volumes is deleted. Volumes attached to any container, including stopped ones, always stay.
 
 Shows df again if something was removed.
 
 ```bash
-dc prune
+dc clean
+dc clean --yes
+dc schedule add clean --yes 0 3 '*' '*' 0
 ```
+
+`--yes` answers yes to both questions, so it runs from a schedule. Without `--yes`, a scheduled or non-interactive run removes nothing.
 
 ---
 
@@ -551,10 +555,10 @@ dc schedule remove images
 ```
 
 - **list** (default) — show managed jobs and log paths
-- **add ACTION [options] m h dom mon dow** — options from that action (for example `images --pull`, `update --check`, `host list`), then five cron fields; asks before writing
+- **add ACTION [options] m h dom mon dow** — options from that action (for example `images --pull`, `clean --yes`, `update --check`, `host list`), then five cron fields; asks before writing
 - **remove ACTION** — asks before deleting; also removes jobs for actions that no longer exist
 
-Allowed actions: `up`, `list`, `ps`, `issue`, `images`, `ports`, `nextport`, `df`, `tidy`, `update`, `host`. A scheduled `up` runs every enabled service, for example `dc schedule add up '*/15' '*' '*' '*' '*'`.
+Allowed actions: `up`, `list`, `ps`, `issue`, `images`, `ports`, `nextport`, `df`, `clean`, `tidy`, `update`, `host`. A scheduled `up` runs every enabled service, for example `dc schedule add up '*/15' '*' '*' '*' '*'`.
 
 Jobs from older versions that use `pull`, `hosts`, or `version` are marked on `dc schedule`, which offers to rewrite them as `images --pull`, `host list`, and `update --check` (keeping the time, env file, and paths).
 

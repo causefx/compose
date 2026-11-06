@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v2.1.0
-### ChangeNotes: up can be scheduled to start every enabled service.
+VERSION=v2.2.0
+### ChangeNotes: clean replaces prune, removes unused named volumes, and --yes can be scheduled.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -146,7 +146,7 @@ cmd|sd|Cmd|||Print docker compose up with env files
 ports|sj|CheckPorts|||Show ports from all env files
 nextport|j|NextPort|||Show the next free host port
 df|j|Disk|||Show Docker disk usage
-prune||Prune|||Remove unused Docker data
+clean|j|Clean||--yes|Remove unused images, cache, containers, networks, and volumes
 # @group Services
 enable|sd|Toggle|enable||Enable service(s)
 disable|sd|Toggle|disable||Disable service(s)
@@ -175,6 +175,7 @@ path|h|Path|||Print script and APPS paths
 version|h|UpdateScript|--check||Display version
 pull|hsd|ShowImages|pull||Old name for images --pull
 hosts|h|Hosts|||Old name for host list
+prune|h|Clean|||Old name for clean
 # @end
 EOF
 }
@@ -2457,16 +2458,41 @@ Disk() {
     fi
 }
 
-Prune() {
-    local answer tried=0 did=0 volume_prompt prune_help
-    Banner "prune"
+# Clean [--yes]: options also come from EXTRA_ARGS.
+Clean() {
+    local arg yes=0 answer tried=0 did=0 prune_help
+    local -a volume_cmd=(docker volume prune -f)
+    for arg in "$@" "${EXTRA_ARGS[@]}"; do
+        case "$arg" in
+            --yes) yes=1 ;;
+            *)
+                Say bad "Clean takes an optional --yes."
+                Say info "dc clean"
+                Say info "dc clean --yes"
+                exit 1
+                ;;
+        esac
+    done
+    Banner "clean"
     Say info "This cleans the whole Docker host."
     if ! docker system df; then
         Say bad "docker system df failed."
         return 1
     fi
     printf "\n"
-    answer="$(Ask "Remove unused images, build cache, stopped containers, and networks? [y/N]")"
+    if [[ "$yes" -eq 0 ]] && NonInteractive; then
+        Say info "Non-interactive: nothing removed without --yes."
+        return 0
+    fi
+    # Docker 23+ prunes only anonymous volumes unless --all is passed.
+    prune_help="$(docker volume prune --help 2>/dev/null)"
+    [[ "$prune_help" == *--all* ]] && volume_cmd=(docker volume prune --all -f)
+
+    if [[ "$yes" -eq 1 ]]; then
+        answer=y
+    else
+        answer="$(Ask "Remove unused images, build cache, stopped containers, and networks? [y/N]")"
+    fi
     if [[ "$answer" == [yY] ]]; then
         tried=1
         if docker system prune -a -f; then
@@ -2475,17 +2501,15 @@ Prune() {
             Say bad "System prune failed."
         fi
     fi
-    # Docker 23+ prunes only anonymous volumes unless --all is passed.
-    prune_help="$(docker volume prune --help 2>/dev/null)"
-    if [[ "$prune_help" == *--all* ]]; then
-        volume_prompt="Remove unused anonymous volumes? Named volumes are kept. [y/N]"
+    if [[ "$yes" -eq 1 ]]; then
+        answer=y
+        Say warn "Removing every volume not attached to a container, named ones too."
     else
-        volume_prompt="Remove unused volumes? Every volume not attached to a container is deleted, named ones too. [y/N]"
+        answer="$(Ask "Remove every volume not attached to a container, named ones too? Their data is deleted. [y/N]")"
     fi
-    answer="$(Ask "$volume_prompt")"
     if [[ "$answer" == [yY] ]]; then
         tried=1
-        if docker volume prune -f; then
+        if "${volume_cmd[@]}"; then
             did=1
         else
             Say bad "Volume prune failed."
