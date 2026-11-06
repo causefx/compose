@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v2.2.0
-### ChangeNotes: clean replaces prune, removes unused named volumes, and --yes can be scheduled.
+VERSION=v2.2.1
+### ChangeNotes: schedule logs move to .logs.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -5621,8 +5621,69 @@ ActionRenamed() {
     esac
 }
 
+ScheduleLogDir() {
+    printf '%s/.logs' "$SCRIPT_WORKING_DIR"
+}
+
 ScheduleLogFile() {
-    printf '%s/logs/schedule-%s.log' "$SCRIPT_WORKING_DIR" "$1"
+    printf '%s/schedule-%s.log' "$(ScheduleLogDir)" "$1"
+}
+
+# Prints the log path a crontab line appends to (">>'path'"). Exit 1 if none.
+ScheduleLineLog() {
+    local log="$1"
+    [[ "$log" == *" >>'"*"' 2>&1"* ]] || return 1
+    log="${log#* >>\'}"
+    log="${log%%\' 2>&1*}"
+    log="${log//\'\\\'\'/\'}"
+    printf '%s' "$log"
+}
+
+# Offers to point jobs that still log to the old logs/ folder at .logs/, and moves their files.
+ScheduleMoveLogs() {
+    local line old_dir new_dir old_q new_q answer changed=0 f
+    local -a lines=() out=()
+    old_dir="$SCRIPT_WORKING_DIR/logs"
+    new_dir="$(ScheduleLogDir)"
+    old_q=">>$(CronQuote "$old_dir/schedule-")"
+    old_q="${old_q%\'}"
+    new_q=">>$(CronQuote "$new_dir/schedule-")"
+    new_q="${new_q%\'}"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        lines+=("$line")
+        [[ "$line" == *" # compose-schedule:"* && "$line" == *"$old_q"* ]] && changed=$((changed + 1))
+    done < <(ReadCrontab)
+    [[ "$changed" -gt 0 ]] || return 0
+    Say warn "$changed schedule(s) still log to $old_dir."
+    answer="$(Ask "Move them to $new_dir? [y/N]")"
+    if [[ "$answer" != [yY] ]]; then
+        Say info "Left those logs in $old_dir."
+        return 0
+    fi
+    mkdir -p "$new_dir" || {
+        Say bad "Could not create $new_dir."
+        return 1
+    }
+    for line in "${lines[@]}"; do
+        if [[ "$line" == *" # compose-schedule:"* ]]; then
+            line="${line/"$old_q"/"$new_q"}"
+        fi
+        out+=("$line")
+    done
+    if ! printf '%s\n' "${out[@]}" | WriteCrontab; then
+        Say bad "Could not update crontab."
+        exit 1
+    fi
+    for f in "$old_dir"/schedule-*.log; do
+        [[ -f "$f" ]] || continue
+        if [[ -e "$new_dir/${f##*/}" ]]; then
+            cat "$f" >>"$new_dir/${f##*/}" && rm -f "$f"
+        else
+            mv -- "$f" "$new_dir/"
+        fi
+    done
+    rmdir "$old_dir" 2>/dev/null || true
+    Say ok "Moved $changed schedule log(s) to $new_dir."
 }
 
 CronQuote() {
@@ -5757,7 +5818,7 @@ ScheduleMigrate() {
 }
 
 ScheduleList() {
-    local line expr count=0 label
+    local line expr count=0 label log
     local -a lines=()
     while IFS= read -r line; do
         [[ "$line" == *" # compose-schedule:"* ]] || continue
@@ -5769,6 +5830,7 @@ ScheduleList() {
         return 0
     fi
     ScheduleMigrate
+    ScheduleMoveLogs
     lines=()
     while IFS= read -r line; do
         [[ "$line" == *" # compose-schedule:"* ]] || continue
@@ -5785,7 +5847,11 @@ ScheduleList() {
         else
             printf "  %b✘%b  %b%-16s%b  %s\n" "$c_red" "$c_reset" "$c_teal" "$label" "$c_reset" "$expr"
         fi
-        Say info "log $(ScheduleLogFile "$SCHED_ACTION")"
+        if log="$(ScheduleLineLog "$line")"; then
+            Say info "log $log"
+        else
+            Say info "log $(ScheduleLogFile "$SCHED_ACTION")"
+        fi
         count=$((count + 1))
     done
     Say ok "$count scheduled action(s)."
@@ -5855,8 +5921,8 @@ ScheduleAdd() {
             return 0
         fi
     fi
-    mkdir -p "$SCRIPT_WORKING_DIR/logs" || {
-        Say bad "Could not create $SCRIPT_WORKING_DIR/logs."
+    mkdir -p "$(ScheduleLogDir)" || {
+        Say bad "Could not create $(ScheduleLogDir)."
         exit 1
     }
     keep+=("$(ScheduleLine "$action" "$nopts" "${opts[@]}" "${fields[@]}")")

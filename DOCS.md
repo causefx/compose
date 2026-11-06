@@ -562,7 +562,7 @@ Allowed actions: `up`, `list`, `ps`, `issue`, `images`, `ports`, `nextport`, `df
 
 Jobs from older versions that use `pull`, `hosts`, or `version` are marked on `dc schedule`, which offers to rewrite them as `images --pull`, `host list`, and `update --check` (keeping the time, env file, and paths).
 
-Cron runs with `COMPOSE_NONINTERACTIVE=1`. Logs go to `logs/schedule-ACTION.log` next to the script. Requires `crontab` on the host.
+Cron runs with `COMPOSE_NONINTERACTIVE=1`. Logs go to `.logs/schedule-ACTION.log` next to the script. Jobs added before 2.2.1 log to `logs/`; `dc schedule` offers to point them at `.logs/` and moves their log files. Requires `crontab` on the host.
 
 ### docs
 
