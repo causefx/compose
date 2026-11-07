@@ -536,7 +536,7 @@ dc host
 ```
 
 - **add [user@host]** — create or reuse an SSH key (`~/.ssh/id_ed25519` preferred, empty passphrase when creating). With a host: ask before `ssh-copy-id`, then verify BatchMode connect, and remember `host` → `user@host` for short-name moves. Without a host: print the install command and a sample `ssh-copy-id` line.
-- **list** (default) — list saved short host names, show `connects as`, and probe whether `move` can connect (✔ ok / ✘ fail).
+- **list** (default) — list saved short host names, show `connects as`, and probe whether `move` can connect (✔ ok / ✘ fail). While each host is checked, a spinner shows `checking HOST (n/total)`.
 
 ### setup
 

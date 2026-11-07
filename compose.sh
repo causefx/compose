@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v2.2.2
-### ChangeNotes: schedule logs move to .logs.
+VERSION=v2.2.3
+### ChangeNotes: host list shows a spinner while probing each host.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -3451,9 +3451,21 @@ ComposeHostNames() {
 }
 
 Hosts() {
-    local short full name_w=8 full_w=12 count=0
+    local short full name_w=8 full_w=12 count=0 i pid status=0
+    local spin='|/-\' tick=0
     local -a names=() targets=()
     local -a ssh_opts=(-T -o BatchMode=yes -o ConnectTimeout=5 -o GSSAPIAuthentication=no -o PreferredAuthentications=publickey)
+
+    HostSpin() {
+        local msg="$1"
+        [[ -t 2 ]] || return 0
+        tick=$(( (tick + 1) % 4 ))
+        printf '\r\033[K  %b%s%b  %s' "$c_teal" "${spin:tick:1}" "$c_reset" "$msg" >&2
+    }
+    HostSpinClear() {
+        [[ -t 2 ]] || return 0
+        printf '\r\033[K' >&2
+    }
 
     Banner "host list"
     if [[ -z "${HOME:-}" ]]; then
@@ -3482,7 +3494,16 @@ Hosts() {
             printf "  %b·%b  %-*s  %-*s  %b?%b\n" "$c_teal" "$c_reset" "$name_w" "$short" "$full_w" "$full" "$c_yellow" "$c_reset"
             continue
         fi
-        if ssh "${ssh_opts[@]}" "$full" true >/dev/null 2>&1; then
+        status=0
+        ssh "${ssh_opts[@]}" "$full" true >/dev/null 2>&1 &
+        pid=$!
+        while kill -0 "$pid" 2>/dev/null; do
+            HostSpin "checking $short ($((i + 1))/$count)"
+            sleep 0.1
+        done
+        wait "$pid" || status=$?
+        HostSpinClear
+        if [[ "$status" -eq 0 ]]; then
             printf "  %b✔%b  %-*s  %-*s  %bok%b\n" "$c_green" "$c_reset" "$name_w" "$short" "$full_w" "$full" "$c_green" "$c_reset"
         else
             printf "  %b✘%b  %-*s  %-*s  %bfail%b\n" "$c_red" "$c_reset" "$name_w" "$short" "$full_w" "$full" "$c_red" "$c_reset"
