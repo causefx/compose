@@ -1,5 +1,6 @@
 # Changelog
 
+### 2.2.4 schedule list hides log paths; dc schedule logs shows them
 ### 2.2.3 host list shows a spinner while probing each host
 ### 2.2.2 archive refuses services that are up; enabled-but-down asks to disable first
 ### 2.2.1 schedule logs go in .logs; dc schedule offers to move old jobs and logs

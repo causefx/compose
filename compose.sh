@@ -1,6 +1,6 @@
 #!/bin/bash
-VERSION=v2.2.3
-### ChangeNotes: host list shows a spinner while probing each host.
+VERSION=v2.2.4
+### ChangeNotes: schedule list hides log paths; dc schedule logs shows them.
 set -o pipefail
 GITHUB="https://github.com/causefx/compose"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/causefx/compose/main"
@@ -168,7 +168,7 @@ tidy|j|TidyEnv||--undo|Organize the env file; --undo restores the backup
 update|j|UpdateScript||--check --force|Check for and install a newer version
 host|j|Host||add list|Add a host for move, or list saved hosts
 setup||Setup||bashrc|Add the dc.bash source line to ~/.bashrc
-schedule||Schedule||list add remove|Manage scheduled compose actions
+schedule||Schedule||list add remove logs|Manage scheduled compose actions
 docs||Docs|||Show command documentation
 help||Help|||This help menu
 path|h|Path|||Print script and APPS paths
@@ -5852,26 +5852,46 @@ ScheduleMigrate() {
     Say ok "Rewrote $changed schedule(s)."
 }
 
-ScheduleList() {
-    local line expr count=0 label log
+# Loads managed crontab lines into SCHED_LINES after migrate prompts.
+ScheduleLoadLines() {
+    local line
     local -a lines=()
+    SCHED_LINES=()
     while IFS= read -r line; do
         [[ "$line" == *" # compose-schedule:"* ]] || continue
         lines+=("$line")
     done < <(ReadCrontab)
     if [[ ${#lines[@]} -eq 0 ]]; then
-        Say info "No scheduled actions."
-        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
         return 0
     fi
     ScheduleMigrate
     ScheduleMoveLogs
-    lines=()
     while IFS= read -r line; do
         [[ "$line" == *" # compose-schedule:"* ]] || continue
-        lines+=("$line")
+        SCHED_LINES+=("$line")
     done < <(ReadCrontab)
-    for line in "${lines[@]}"; do
+}
+
+ScheduleJobLog() {
+    local line="$1" action="$2" log
+    if log="$(ScheduleLineLog "$line")"; then
+        printf '%s' "$log"
+        return 0
+    fi
+    ScheduleLogFile "$action"
+}
+
+ScheduleList() {
+    local line expr count=0 label log dir default_dir elsewhere=0
+
+    ScheduleLoadLines
+    if [[ ${#SCHED_LINES[@]} -eq 0 ]]; then
+        Say info "No scheduled actions."
+        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
+        return 0
+    fi
+    default_dir="$(ScheduleLogDir)"
+    for line in "${SCHED_LINES[@]}"; do
         ScheduleParseLine "$line" || continue
         label="$SCHED_ACTION"
         [[ -n "$SCHED_OPTS" ]] && label+=" $SCHED_OPTS"
@@ -5882,12 +5902,72 @@ ScheduleList() {
         else
             printf "  %b✘%b  %b%-16s%b  %s\n" "$c_red" "$c_reset" "$c_teal" "$label" "$c_reset" "$expr"
         fi
-        if log="$(ScheduleLineLog "$line")"; then
-            Say info "log $log"
-        else
-            Say info "log $(ScheduleLogFile "$SCHED_ACTION")"
-        fi
+        log="$(ScheduleJobLog "$line" "$SCHED_ACTION")"
+        dir="${log%/*}"
+        [[ -n "$dir" && "$dir" != "$log" ]] || dir="$default_dir"
+        [[ "$dir" == "$default_dir" ]] || elsewhere=$((elsewhere + 1))
         count=$((count + 1))
+    done
+    if [[ "$elsewhere" -gt 0 ]]; then
+        Say info "logs in $default_dir · $elsewhere elsewhere · dc schedule logs"
+    else
+        Say info "logs in $default_dir · dc schedule logs"
+    fi
+    Say ok "$count scheduled action(s)."
+}
+
+ScheduleLogs() {
+    local line expr count=0 label log base dir default_dir i
+    local label_w=16 when_w=11 log_w=3
+    local -a labels=() whens=() bases=()
+    local -A dir_count=()
+    local -a dir_order=()
+
+    ScheduleLoadLines
+    if [[ ${#SCHED_LINES[@]} -eq 0 ]]; then
+        Say info "No scheduled actions."
+        Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
+        return 0
+    fi
+    default_dir="$(ScheduleLogDir)"
+    for line in "${SCHED_LINES[@]}"; do
+        ScheduleParseLine "$line" || continue
+        label="$SCHED_ACTION"
+        [[ -n "$SCHED_OPTS" ]] && label+=" $SCHED_OPTS"
+        expr="${line%% cd *}"
+        expr="${expr%"${expr##*[![:space:]]}"}"
+        log="$(ScheduleJobLog "$line" "$SCHED_ACTION")"
+        base="${log##*/}"
+        dir="${log%/*}"
+        [[ -n "$dir" && "$dir" != "$log" ]] || dir="$default_dir"
+        labels+=("$label")
+        whens+=("$expr")
+        bases+=("$base")
+        if [[ -z "${dir_count[$dir]+x}" ]]; then
+            dir_order+=("$dir")
+            dir_count["$dir"]=1
+        else
+            dir_count["$dir"]=$((dir_count["$dir"] + 1))
+        fi
+        (( ${#label} > label_w )) && label_w=${#label}
+        (( ${#expr} > when_w )) && when_w=${#expr}
+        (( ${#base} > log_w )) && log_w=${#base}
+        count=$((count + 1))
+    done
+    printf "  %b%-*s  %-*s  %-*s%b\n" "$c_dim" "$label_w" "action" "$when_w" "when" "$log_w" "log" "$c_reset"
+    for ((i = 0; i < count; i++)); do
+        printf "  %b%-*s%b  %-*s  %s\n" \
+            "$c_teal" "$label_w" "${labels[$i]}" "$c_reset" \
+            "$when_w" "${whens[$i]}" \
+            "${bases[$i]}"
+    done
+    printf "\n"
+    for dir in "${dir_order[@]}"; do
+        if [[ "$dir" == "$default_dir" ]]; then
+            Say info "$dir"
+        else
+            Say info "$dir (${dir_count[$dir]})"
+        fi
     done
     Say ok "$count scheduled action(s)."
 }
@@ -6021,6 +6101,9 @@ Schedule() {
         list|"")
             ScheduleList
             ;;
+        logs|log)
+            ScheduleLogs
+            ;;
         add)
             ScheduleAdd "${EXTRA_ARGS[@]:1}"
             ;;
@@ -6033,8 +6116,9 @@ Schedule() {
             ScheduleRemove "${EXTRA_ARGS[1]}"
             ;;
         *)
-            Say bad "Use list, add, or remove."
+            Say bad "Use list, logs, add, or remove."
             Say info "dc schedule"
+            Say info "dc schedule logs"
             Say info "dc schedule add images --pull 0 4 '*' '*' '*'"
             Say info "dc schedule remove images"
             exit 1

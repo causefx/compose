@@ -553,12 +553,14 @@ Manage user crontab entries for this helper. Lines are tagged `# compose-schedul
 
 ```bash
 dc schedule
+dc schedule logs
 dc schedule add images --pull 0 4 '*' '*' '*'
 dc schedule add update 0 5 '*' '*' 0
 dc schedule remove images
 ```
 
-- **list** (default) — show managed jobs and log paths
+- **list** (default) — show managed jobs and cron times; one footer line points at the log directory and `dc schedule logs`
+- **logs** — table of action, when, and log basename; full directories listed under the table (counts when a job logs outside the default `.logs/`)
 - **add ACTION [options] m h dom mon dow** — options from that action (for example `images --pull`, `clean --yes`, `update --check`, `host list`), then five cron fields; asks before writing
 - **remove ACTION** — asks before deleting; also removes jobs for actions that no longer exist
 
